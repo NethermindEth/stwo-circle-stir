@@ -161,6 +161,16 @@ impl<F: Field> ComplexConjugate for CirclePoint<F> {
     }
 }
 
+impl CirclePoint<BaseField> {
+    pub fn get_random_point<C: Channel>(channel: &mut C) -> Self {
+        let t = channel.draw_felt();
+        let x = t.0 .0;
+        let y = t.0 .1;
+
+        Self { x, y }
+    }
+}
+
 impl CirclePoint<SecureField> {
     pub fn get_point(index: u128) -> Self {
         assert!(index < SECURE_FIELD_CIRCLE_ORDER);
@@ -173,7 +183,7 @@ impl CirclePoint<SecureField> {
 
         let one_plus_tsquared_inv = t_square.add(SecureField::one()).inverse();
 
-        let x = SecureField::one()
+        let x: super::fields::qm31::QM31 = SecureField::one()
             .add(t_square.neg())
             .mul(one_plus_tsquared_inv);
         let y = t.double().mul(one_plus_tsquared_inv);
@@ -304,7 +314,7 @@ impl Neg for CirclePointIndex {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Coset {
     pub initial_index: CirclePointIndex,
-    pub initial: CirclePoint<M31>,
+    pub initial: CirclePoint<M31>, // initial * step = roots of unity
     pub step_size: CirclePointIndex,
     pub step: CirclePoint<M31>,
     pub log_size: u32,
@@ -514,12 +524,12 @@ mod tests {
     pub fn test_get_random_circle_point() {
         let mut channel = Blake2sChannel::default();
 
-        let first_random_circle_point = CirclePoint::get_random_point(&mut channel);
+        let first_random_circle_point = CirclePoint::<SecureField>::get_random_point(&mut channel);
 
         // Assert that the next random circle point is different.
         assert_ne!(
             first_random_circle_point,
-            CirclePoint::get_random_point(&mut channel)
+            CirclePoint::<SecureField>::get_random_point(&mut channel)
         );
     }
 

@@ -281,7 +281,7 @@ unsafe fn ifft2_loop(values: *mut u32, twiddle_dbl: &[&[u32]], layer: usize, ind
 ///
 /// Behavior is undefined if `values` does not have the same alignment as [`PackedBaseField`].
 unsafe fn ifft1_loop(values: *mut u32, twiddle_dbl: &[&[u32]], layer: usize, index: usize) {
-    let offset = index << (layer + 1);
+    let offset: usize = index << (layer + 1);
     for l in (0..1 << layer).step_by(1 << LOG_N_LANES as usize) {
         ifft1(
             values,
