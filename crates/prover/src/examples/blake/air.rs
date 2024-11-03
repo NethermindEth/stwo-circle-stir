@@ -8,6 +8,7 @@ use tracing::{span, Level};
 use super::round::{blake_round_info, BlakeRoundComponent, BlakeRoundEval};
 use super::scheduler::{BlakeSchedulerComponent, BlakeSchedulerEval};
 use super::xor_table::{XorTableComponent, XorTableEval};
+use crate::constraint_framework::constant_columns::gen_is_first;
 use crate::constraint_framework::TraceLocationAllocator;
 use crate::core::air::{Component, ComponentProver};
 use crate::core::backend::simd::m31::LOG_N_LANES;
@@ -127,7 +128,7 @@ impl BlakeComponents {
                     log_size: stmt0.log_size,
                     blake_lookup_elements: all_elements.blake_elements.clone(),
                     round_lookup_elements: all_elements.round_elements.clone(),
-                    claimed_sum: stmt1.scheduler_claimed_sum,
+                    total_sum: stmt1.scheduler_claimed_sum,
                 },
             ),
             round_components: ROUND_LOG_SPLIT
@@ -140,7 +141,7 @@ impl BlakeComponents {
                             log_size: stmt0.log_size + l,
                             xor_lookup_elements: all_elements.xor_elements.clone(),
                             round_lookup_elements: all_elements.round_elements.clone(),
-                            claimed_sum,
+                            total_sum: claimed_sum,
                         },
                     )
                 })
@@ -362,10 +363,16 @@ where
     span.exit();
 
     // Constant trace.
+    // TODO(ShaharS): share is_first column between components when constant columns support this.
     let span = span!(Level::INFO, "Constant Trace").entered();
     let mut tree_builder = commitment_scheme.tree_builder();
     tree_builder.extend_evals(
         chain![
+            vec![gen_is_first(log_size)],
+            ROUND_LOG_SPLIT
+                .iter()
+                .map(|l| gen_is_first(log_size + l))
+                .collect_vec(),
             xor_table::generate_constant_trace::<12, 4>(),
             xor_table::generate_constant_trace::<9, 2>(),
             xor_table::generate_constant_trace::<8, 2>(),
@@ -436,7 +443,7 @@ pub fn verify_blake<MC: MerkleChannel>(
         + stmt1.xor7_claimed_sum
         + stmt1.xor4_claimed_sum;
 
-    // TODO(spapini): Add inputs to sum, and constraint them.
+    // TODO(shahars): Add inputs to sum, and constraint them.
     assert_eq!(total_sum, SecureField::zero());
 
     verify(

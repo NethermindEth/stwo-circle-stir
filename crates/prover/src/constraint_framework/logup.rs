@@ -5,7 +5,7 @@ use num_traits::{One, Zero};
 
 use super::EvalAtRow;
 use crate::core::backend::simd::column::SecureColumn;
-use crate::core::backend::simd::m31::{PackedBaseField, LOG_N_LANES};
+use crate::core::backend::simd::m31::LOG_N_LANES;
 use crate::core::backend::simd::prefix_sum::inclusive_prefix_sum;
 use crate::core::backend::simd::qm31::PackedSecureField;
 use crate::core::backend::simd::SimdBackend;
@@ -13,43 +13,60 @@ use crate::core::backend::Column;
 use crate::core::channel::Channel;
 use crate::core::fields::m31::BaseField;
 use crate::core::fields::qm31::SecureField;
-use crate::core::fields::secure_column::{SecureColumnByCoords, SECURE_EXTENSION_DEGREE};
+use crate::core::fields::secure_column::SecureColumnByCoords;
 use crate::core::fields::FieldExpOps;
 use crate::core::lookups::utils::Fraction;
 use crate::core::poly::circle::{CanonicCoset, CircleEvaluation};
 use crate::core::poly::BitReversedOrder;
+use crate::core::utils::{bit_reverse_index, coset_index_to_circle_domain_index};
 use crate::core::ColumnVec;
+
+/// Represents the value of the prefix sum column at some index.
+/// Should be used to eliminate padded rows for the logup sum.
+pub type ClaimedPrefixSum = (SecureField, usize);
 
 /// Evaluates constraints for batched logups.
 /// These constraint enforce the sum of multiplicity_i / (z + sum_j alpha^j * x_j) = claimed_sum.
 pub struct LogupAtRow<E: EvalAtRow> {
     /// The index of the interaction used for the cumulative sum columns.
     pub interaction: usize,
-    /// A constant to subtract from each row, to make the totall sum of the last column zero.
-    /// In other words, claimed_sum / 2^log_size.
-    /// This is used to make the constraint uniform.
-    pub cumsum_shift: SecureField,
+    /// The total sum of all the fractions.
+    pub total_sum: SecureField,
+    /// The claimed sum of the relevant fractions.
+    /// This is used for padding the component with default rows. Padding should be in bit-reverse.
+    /// None if the claimed_sum is the total_sum.
+    pub claimed_sum: Option<ClaimedPrefixSum>,
     /// The evaluation of the last cumulative sum column.
     pub prev_col_cumsum: E::EF,
     cur_frac: Option<Fraction<E::EF, E::EF>>,
     is_finalized: bool,
+    /// The value of the `is_first` constant column at current row.
+    /// See [`super::constant_columns::gen_is_first()`].
+    pub is_first: E::F,
 }
 impl<E: EvalAtRow> LogupAtRow<E> {
-    pub fn new(interaction: usize, claimed_sum: SecureField, log_size: u32) -> Self {
+    pub fn new(
+        interaction: usize,
+        total_sum: SecureField,
+        claimed_sum: Option<ClaimedPrefixSum>,
+        is_first: E::F,
+    ) -> Self {
         Self {
             interaction,
-            cumsum_shift: claimed_sum / BaseField::from_u32_unchecked(1 << log_size),
+            total_sum,
+            claimed_sum,
             prev_col_cumsum: E::EF::zero(),
             cur_frac: None,
             is_finalized: false,
+            is_first,
         }
     }
 
     pub fn write_frac(&mut self, eval: &mut E, fraction: Fraction<E::EF, E::EF>) {
         // Add a constraint that num / denom = diff.
-        if let Some(cur_frac) = self.cur_frac {
-            let cur_cumsum = eval.next_extension_interaction_mask(self.interaction, [0])[0];
-            let diff = cur_cumsum - self.prev_col_cumsum;
+        if let Some(cur_frac) = self.cur_frac.clone() {
+            let [cur_cumsum] = eval.next_extension_interaction_mask(self.interaction, [0]);
+            let diff = cur_cumsum.clone() - self.prev_col_cumsum.clone();
             self.prev_col_cumsum = cur_cumsum;
             eval.add_constraint(diff * cur_frac.denominator - cur_frac.numerator);
         }
@@ -59,17 +76,33 @@ impl<E: EvalAtRow> LogupAtRow<E> {
     pub fn finalize(mut self, eval: &mut E) {
         assert!(!self.is_finalized, "LogupAtRow was already finalized");
 
-        let frac = self.cur_frac.unwrap();
+        let frac = self.cur_frac.clone().unwrap();
 
-        let [cur_cumsum, prev_row_cumsum] =
-            eval.next_extension_interaction_mask(self.interaction, [0, -1]);
+        // TODO(ShaharS): remove `claimed_row_index` interaction value and get the shifted offset
+        // from the is_first column when constant columns are supported.
+        let (cur_cumsum, prev_row_cumsum) = match self.claimed_sum {
+            Some((claimed_sum, claimed_row_index)) => {
+                let [cur_cumsum, prev_row_cumsum, claimed_cumsum] = eval
+                    .next_extension_interaction_mask(
+                        self.interaction,
+                        [0, -1, claimed_row_index as isize],
+                    );
 
-        let diff = cur_cumsum - prev_row_cumsum - self.prev_col_cumsum;
-        // Instead of checking diff = num / denom, check diff = num / denom - cumsum_shift.
-        // This makes (num / denom - cumsum_shift) have sum zero, which makes the constraint
-        // uniform - apply on all rows.
-        let fixed_diff = diff + self.cumsum_shift;
-        eval.add_constraint(fixed_diff * frac.denominator - frac.numerator);
+                // Constrain that the claimed_sum in case that it is not equal to the total_sum.
+                eval.add_constraint((claimed_cumsum - claimed_sum) * self.is_first.clone());
+                (cur_cumsum, prev_row_cumsum)
+            }
+            None => {
+                let [cur_cumsum, prev_row_cumsum] =
+                    eval.next_extension_interaction_mask(self.interaction, [0, -1]);
+                (cur_cumsum, prev_row_cumsum)
+            }
+        };
+        // Fix `prev_row_cumsum` by subtracting `total_sum` if this is the first row.
+        let fixed_prev_row_cumsum = prev_row_cumsum - self.is_first.clone() * self.total_sum;
+        let diff = cur_cumsum - fixed_prev_row_cumsum - self.prev_col_cumsum.clone();
+
+        eval.add_constraint(diff * frac.denominator - frac.numerator);
 
         self.is_finalized = true;
     }
@@ -105,20 +138,23 @@ impl<const N: usize> LookupElements<N> {
             alpha_powers,
         }
     }
-    pub fn combine<F: Copy, EF>(&self, values: &[F]) -> EF
+    pub fn combine<F: Clone, EF>(&self, values: &[F]) -> EF
     where
-        EF: Copy + Zero + From<F> + From<SecureField> + Mul<F, Output = EF> + Sub<EF, Output = EF>,
+        EF: Clone + Zero + From<F> + From<SecureField> + Mul<F, Output = EF> + Sub<EF, Output = EF>,
     {
-        EF::from(values[0])
-            + values[1..]
-                .iter()
-                .zip(self.alpha_powers.iter())
-                .fold(EF::zero(), |acc, (&value, &power)| {
-                    acc + EF::from(power) * value
-                })
+        assert!(
+            self.alpha_powers.len() >= values.len(),
+            "Not enough alpha powers to combine values"
+        );
+        values
+            .iter()
+            .zip(self.alpha_powers)
+            .fold(EF::zero(), |acc, (value, power)| {
+                acc + EF::from(power) * value.clone()
+            })
             - EF::from(self.z)
     }
-    // TODO(spapini): Try to remove this.
+
     pub fn dummy() -> Self {
         Self {
             z: SecureField::one(),
@@ -160,45 +196,53 @@ impl LogupTraceGenerator {
         }
     }
 
-    /// Finalize the trace. Returns the trace and the claimed sum of the last column.
-    pub fn finalize(
-        mut self,
+    /// Finalize the trace. Returns the trace and the total sum of the last column.
+    pub fn finalize_last(
+        self,
     ) -> (
         ColumnVec<CircleEvaluation<SimdBackend, BaseField, BitReversedOrder>>,
         SecureField,
     ) {
-        // Compute claimed sum.
-        let mut last_col_coords = self.trace.pop().unwrap().columns;
-        let packed_sums: [PackedBaseField; SECURE_EXTENSION_DEGREE] = last_col_coords
-            .each_ref()
-            .map(|c| c.data.iter().copied().sum());
-        let base_sums = packed_sums.map(|s| s.pointwise_sum());
-        let claimed_sum = SecureField::from_m31_array(base_sums);
+        let log_size = self.log_size;
+        let (trace, [total_sum]) = self.finalize_at([(1 << log_size) - 1]);
+        (trace, total_sum)
+    }
 
-        // Shift the last column to make the sum zero.
-        let cumsum_shift = claimed_sum / BaseField::from_u32_unchecked(1 << self.log_size);
-        last_col_coords.iter_mut().enumerate().for_each(|(i, c)| {
-            c.data
-                .iter_mut()
-                .for_each(|x| *x -= PackedBaseField::broadcast(cumsum_shift.to_m31_array()[i]))
-        });
-
+    /// Finalize the trace. Returns the trace and the prefix sum of the last column at
+    /// the corresponding `indices`.
+    pub fn finalize_at<const N: usize>(
+        mut self,
+        indices: [usize; N],
+    ) -> (
+        ColumnVec<CircleEvaluation<SimdBackend, BaseField, BitReversedOrder>>,
+        [SecureField; N],
+    ) {
         // Prefix sum the last column.
+        let last_col_coords = self.trace.pop().unwrap().columns;
         let coord_prefix_sum = last_col_coords.map(inclusive_prefix_sum);
-        self.trace.push(SecureColumnByCoords {
+        let secure_prefix_sum = SecureColumnByCoords {
             columns: coord_prefix_sum,
+        };
+        let returned_prefix_sums = indices.map(|idx| {
+            // Prefix sum column is in bit-reversed circle domain order.
+            let fixed_index = bit_reverse_index(
+                coset_index_to_circle_domain_index(idx, self.log_size),
+                self.log_size,
+            );
+            secure_prefix_sum.at(fixed_index)
         });
+        self.trace.push(secure_prefix_sum);
 
         let trace = self
             .trace
             .into_iter()
             .flat_map(|eval| {
-                eval.columns.map(|c| {
-                    CircleEvaluation::new(CanonicCoset::new(self.log_size).circle_domain(), c)
+                eval.columns.map(|col| {
+                    CircleEvaluation::new(CanonicCoset::new(self.log_size).circle_domain(), col)
                 })
             })
             .collect_vec();
-        (trace, claimed_sum)
+        (trace, returned_prefix_sums)
     }
 }
 
@@ -253,18 +297,41 @@ impl<'a> LogupColGenerator<'a> {
 mod tests {
     use num_traits::One;
 
-    use super::LogupAtRow;
+    use super::{LogupAtRow, LookupElements};
     use crate::constraint_framework::InfoEvaluator;
+    use crate::core::channel::Blake2sChannel;
+    use crate::core::fields::m31::BaseField;
     use crate::core::fields::qm31::SecureField;
+    use crate::core::fields::FieldExpOps;
     use crate::core::lookups::utils::Fraction;
 
     #[test]
     #[should_panic]
     fn test_logup_not_finalized_panic() {
-        let mut logup = LogupAtRow::<InfoEvaluator>::new(1, SecureField::one(), 7);
+        let mut logup =
+            LogupAtRow::<InfoEvaluator>::new(1, SecureField::one(), None, BaseField::one());
         logup.write_frac(
             &mut InfoEvaluator::default(),
             Fraction::new(SecureField::one(), SecureField::one()),
+        );
+    }
+
+    #[test]
+    fn test_lookup_elements_combine() {
+        let mut channel = Blake2sChannel::default();
+        let lookup_elements = LookupElements::<3>::draw(&mut channel);
+        let values = [
+            BaseField::from_u32_unchecked(123),
+            BaseField::from_u32_unchecked(456),
+            BaseField::from_u32_unchecked(789),
+        ];
+
+        assert_eq!(
+            lookup_elements.combine::<BaseField, SecureField>(&values),
+            BaseField::from_u32_unchecked(123)
+                + BaseField::from_u32_unchecked(456) * lookup_elements.alpha
+                + BaseField::from_u32_unchecked(789) * lookup_elements.alpha.pow(2)
+                - lookup_elements.z
         );
     }
 }
