@@ -16,8 +16,8 @@
 
 //             if i == len(self.folding_params):
 //                 break
-
-use std::ops::Mul;
+#![allow(unused_variables)]
+#![allow(unused_assignments)]
 
 use itertools::max;
 use num_traits::{One, Zero};
@@ -77,8 +77,9 @@ pub fn circle_to_circle_fold(
         let mut g_hat = vec![];
         for l in 0..=1 {
             for k in 0..folded_len {
-                let polys = x_polys[k + folded_len * l];
-                let point = *r_fold * xs[k + eval_sizes[i - 1] * l].to_point().conjugate();
+                let polys = &x_polys[k + folded_len * l];
+                let point = (*r_fold)
+                    .mul_circle_point(xs[k + eval_sizes[i - 1] * l].to_point().conjugate());
 
                 let eval = eval_circ_poly_at(&polys, &point);
                 g_hat.push(eval);
@@ -399,11 +400,20 @@ impl Conjugate<CirclePoint<QM31>> for CirclePoint<QM31> {
     }
 }
 
-impl Mul<CirclePoint<BaseField>> for CirclePoint<BaseField> {
-    type Output = Self;
+// impl Mul<CirclePoint<BaseField>> for CirclePoint<BaseField> {
+//     type Output = Self;
 
-    fn mul(self, rhs: CirclePoint<BaseField>) -> Self::Output {
-        Self::Output {
+//     fn mul(self, rhs: CirclePoint<BaseField>) -> Self::Output {
+//         Self::Output {
+//             x: self.x * rhs.x - self.y * rhs.y,
+//             y: self.x * rhs.y + self.y * rhs.x,
+//         }
+//     }
+// }
+
+impl CirclePoint<BaseField> {
+    fn mul_circle_point(self, rhs: CirclePoint<BaseField>) -> Self {
+        Self {
             x: self.x * rhs.x - self.y * rhs.y,
             y: self.x * rhs.y + self.y * rhs.x,
         }
@@ -426,7 +436,8 @@ mod tests {
             .circle_domain()
             .half_coset;
 
-        let mut root_of_unity = coset.initial_index * coset.step_size.0;
+        let root_of_unity = coset.initial_index * coset.step_size.0;
         let xs = get_mul_cycle::<P>(root_of_unity, CirclePointIndex(1));
+        println!("{:?}", xs);
     }
 }
