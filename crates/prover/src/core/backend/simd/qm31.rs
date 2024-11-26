@@ -8,6 +8,9 @@ use rand::distributions::{Distribution, Standard};
 
 use super::cm31::PackedCM31;
 use super::m31::{PackedM31, N_LANES};
+use crate::core::circle::CirclePoint;
+use crate::core::fields::cm31::CM31;
+use crate::core::fields::m31::M31;
 use crate::core::fields::qm31::QM31;
 use crate::core::fields::FieldExpOps;
 
@@ -293,6 +296,18 @@ impl From<PackedM31> for PackedQM31 {
 impl From<QM31> for PackedQM31 {
     fn from(value: QM31) -> Self {
         PackedQM31::broadcast(value)
+    }
+}
+
+impl From<QM31> for CirclePoint<QM31> {
+    fn from(a: QM31) -> Self {
+        let a_inv = a.inverse();
+        let half = M31(2).inverse();
+
+        let x = (a + a_inv) * half;
+        let y = (a_inv - a).mul_cm31(CM31::from_m31(M31::zero(), half));
+
+        Self { x, y }
     }
 }
 

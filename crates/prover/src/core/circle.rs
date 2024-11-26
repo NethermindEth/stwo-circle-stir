@@ -437,6 +437,22 @@ impl Coset {
         let res = (i - self.initial_index).try_div(self.step_size)?;
         Some(res.rem_euclid(self.size() as isize) as usize)
     }
+
+    pub fn get_mul_cycle(&self, offset: CirclePointIndex) -> Vec<CirclePointIndex> {
+        let mut os = vec![offset];
+
+        loop {
+            let o: CirclePointIndex = os.last().unwrap().to_owned() + self.step_size;
+            os.push(o);
+
+            if o == offset {
+                break;
+            }
+        }
+
+        os.reverse();
+        os
+    }
 }
 
 impl IntoIterator for Coset {

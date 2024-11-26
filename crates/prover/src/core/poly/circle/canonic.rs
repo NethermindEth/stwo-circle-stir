@@ -9,14 +9,19 @@ use crate::core::fields::m31::BaseField;
 /// which is G_2n + i * G_n/2 and then -G_2n -i * G_n/2.
 /// For example, the Xs below are a canonic coset with n=8.
 /// ```text
-///    X O X
+///    X a y
 ///  O       O
-/// X         X
-/// O         O
-/// X         X
+/// y         X
+/// a         a
+/// X         y
 ///  O       O
-///    X O X
+///    y a X
 /// ```
+/// 
+/// 0 = trace domain
+/// y = evaluation domain, rotated from 0
+/// X = is the twin coset 
+/// y+x = evaluation domain
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct CanonicCoset {
     pub coset: Coset,
@@ -31,11 +36,17 @@ impl CanonicCoset {
     }
 
     /// Gets the full coset represented G_{2n} + <G_n>.
+    /// for evaluation
+    /// polygon that is not symmetric 
+    /// the polygon is reflected at the x-axis
     pub fn coset(&self) -> Coset {
         self.coset
     }
 
     /// Gets half of the coset (its conjugate complements to the whole coset), G_{2n} + <G_{n/2}>
+    /// trace domain has the property of being invariant under the reflection of the x-axis
+    /// when we start mapping things to the half coset, 
+    /// each conjugates is only represented once
     pub fn half_coset(&self) -> Coset {
         Coset::half_odds(self.log_size() - 1)
     }

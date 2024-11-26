@@ -1,68 +1,74 @@
-// # fold using r-fold
-//             assert self.eval_sizes[i-1] % self.folding_params[i-1] == 0
-//             folded_len = self.eval_sizes[i-1]//self.folding_params[i-1]
-//             #should replace lagrange_interp with an fft?
-//             rt2 = f.exp(rt, folded_len)
-//             xs2s = [get_power_cycle(rt2, self.modulus, Gaussian(1,0))]
-//             xs2s.append([xs2s[0][-j] for j in range(self.folding_params[i-1])]) # chee: what does
-// this mean?             x_polys =\
-//                 [f.circ_lagrange_interp(xs2s[l], #chee: interpolate at xs2s points for vals
-//                                         [vals[k + folded_len*j + self.eval_sizes[i-1]*l] for j in
-// range(self.folding_params[i-1])],                                         normalize=True) for l
-// in [0,1] for k in range(folded_len)] #chee: i dont really get this, why is there an array in an
-// array?             g_hat = [f.eval_circ_poly_at(x_polys[k + folded_len*l],
-//                                          f.mul(r_fold, xs[k + self.eval_sizes[i-1]*l].conj()))
-// for l in [0,1] for k in range(folded_len)]
-
-//             if i == len(self.folding_params):
-//                 break
 #![allow(unused_variables)]
 #![allow(unused_assignments)]
 
 use itertools::max;
 use num_traits::{One, Zero};
 
+use super::backend::BackendForChannel;
+use super::channel::{Channel, MerkleChannel};
 use super::circle::{CirclePoint, CirclePointIndex, Coset};
 use super::fields::cm31::CM31;
 use super::fields::m31::{BaseField, M31, P};
-use super::fields::qm31::QM31;
+use super::fields::qm31::{SecureField, QM31};
 use super::fields::FieldExpOps;
+use super::poly::circle::{CircleDomain, CircleEvaluation};
+use super::poly::BitReversedOrder;
+use super::vcs::prover::MerkleProver;
 
-const MOD: u32 = P;
-
-pub fn circle_to_circle_fold(
-    coset: Coset,
+pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
+    channel: &mut MC::C,
+    mut coset: Coset,
     eval_sizes: Vec<usize>,
     folding_params: Vec<usize>,
     values: &Vec<BaseField>,
-    r_fold: &CirclePoint<BaseField>,
     eval_offsets: &Vec<CirclePointIndex>,
 ) -> Result<(), String> {
-    let mut root_of_unity = coset.initial_index * coset.step_size.0;
+    let ood_rep = 1;
+    let mut output = vec![];
+    let mut all_betas = vec![];
 
-    let mut xs: Vec<CirclePointIndex> = get_mul_cycle::<MOD>(root_of_unity, eval_offsets[0]);
+    let mut xs = coset.get_mul_cycle(eval_offsets[0]);
+    // TODO: can we refactor this step of getting the conjugates? maybe somehow using `conjugate`
+    // function?
     let mut xs_conj: Vec<CirclePointIndex> = xs.iter().map(|x| x.conj()).collect();
     xs.append(&mut xs_conj);
 
-    let vals = values.to_owned();
+    if values.len() != xs.len() && xs.len() / 2 != eval_sizes[0] {
+        return Err("values.len() != xs.len() && xs.len()/2 != eval_sizes[0]".to_owned());
+    }
 
-    // TODO: check consistency of index i
-    for i in 0..folding_params.len() {
-        if eval_sizes[i] % folding_params[i] != 0 {
-            return Err("eval_sizes % folding_params != 0".into());
+    let vals = values.to_owned();
+    // TODO: to check if this is correct
+    // TODO: always combine commit with mix_root?
+    let merkle_tree: MerkleProver<B, MC::H> =
+        MerkleProver::commit(vec![&vals.iter().map(|x| *x).collect()]);
+    output.push(merkle_tree.root());
+
+    MC::mix_root(channel, merkle_tree.root());
+
+    let rnd = channel.draw_felt();
+    let rnd_x = rnd.0 .0;
+    let rnd_y = rnd.0 .1;
+    let r_fold = CirclePoint { x: rnd_x, y: rnd_y };
+
+    for i in 1..folding_params.len() + 1 {
+        // # fold using r-fold
+        if eval_sizes[i - 1] % folding_params[i - 1] != 0 {
+            return Err("eval_sizes[i-1] % folding_params[i-1] != 0".to_owned());
         }
 
-        let folded_len = eval_sizes[i] / folding_params[i];
-        let mut root_of_unity_2 = root_of_unity * folded_len;
+        let folded_len = eval_sizes[i - 1] / folding_params[i - 1];
+        let mut coset2 = coset.repeated_double(folded_len.ilog2());
 
-        let mut xs2s = vec![get_mul_cycle::<MOD>(root_of_unity_2, CirclePointIndex(1))];
-        xs2s.push(
-            (0..folding_params[i])
-                .map(|j| xs2s[0][xs2s[0].len() - j - 1])
-                .collect(),
-        );
+        let mut xs2s: [Vec<CirclePointIndex>; 2] = [vec![], vec![]];
+        xs2s[0] = coset2.get_mul_cycle(CirclePointIndex(1));
+        xs2s[1] = (0..folding_params[i])
+            .map(|j| xs2s[0][xs2s[0].len() - j - 1])
+            .collect();
 
-        let mut x_polys: Vec<Vec<Vec<BaseField>>> = vec![];
+        let mut x_polys: Vec<[Vec<BaseField>; 2]> = vec![];
+
+        // TODO: to check correctness or possibly simplier this function
         for l in 0..=1 {
             for k in 0..folded_len {
                 let interp_vals: Vec<BaseField> = (0..folding_params[i - 1])
@@ -78,10 +84,10 @@ pub fn circle_to_circle_fold(
         for l in 0..=1 {
             for k in 0..folded_len {
                 let polys = &x_polys[k + folded_len * l];
-                let point = (*r_fold)
-                    .mul_circle_point(xs[k + eval_sizes[i - 1] * l].to_point().conjugate());
+                let point =
+                    r_fold.mul_circle_point(xs[k + eval_sizes[i - 1] * l].to_point().conjugate());
 
-                let eval = eval_circ_poly_at(&polys, &point);
+                let eval = eval_circ_poly_at2(&polys, &point);
                 g_hat.push(eval);
             }
         }
@@ -101,53 +107,69 @@ pub fn circle_to_circle_fold(
         }
 
         let eval_size_scale = eval_sizes[i - 1] / eval_sizes[i];
+        coset = coset.repeated_double(eval_size_scale.ilog2());
+        coset2 = coset2.repeated_double(expand_factor.ilog2());
 
-        root_of_unity = root_of_unity * eval_size_scale;
-        root_of_unity_2 = root_of_unity * expand_factor;
         let p_offset = eval_offsets[i - 1] * folding_params[i - 1];
 
-        // # chee: what are these rt and rt2 for?
-        // g_hat_shift = shift_domain(g_hat, self.modulus, rt, p_offset, self.eval_offsets[i],
-        // expand = expand_factor) m2 = merkelize(g_hat_shift) // to use  MerkleProver::commit
-        // output += m2[1]
+        let g_hat_domain =
+            CircleDomain::new(coset.repeated_double(expand_factor.ilog2())).shift(p_offset);
+        let g_hat_evaluate = CircleEvaluation::<B, BaseField, BitReversedOrder>::new(
+            g_hat_domain,
+            g_hat.iter().map(|x| *x).collect(),
+        );
 
-        // xs = get_power_cycle(rt, self.modulus, self.eval_offsets[i])
-        // xs += [x.conj()%self.modulus for x in xs]
+        let poly = g_hat_evaluate.clone().interpolate();
+        let shifted_domain = CircleDomain::new(coset.shift(eval_offsets[i]));
+        let g_hat_shift = poly.evaluate(shifted_domain);
 
-        xs = get_mul_cycle::<MOD>(root_of_unity, eval_offsets[i]);
+        let m2: MerkleProver<B, MC::H> = MerkleProver::commit(vec![&g_hat_shift.values]);
+        output.push(m2.root());
+
+        MC::mix_root(channel, merkle_tree.root());
+
+        xs = coset.get_mul_cycle(eval_offsets[i]);
         let mut xs_conj: Vec<CirclePointIndex> = xs.iter().map(|x| x.conj()).collect();
         xs.append(&mut xs_conj);
+
+        let r_outs = channel.draw_felts(ood_rep);
+
+        let inv_fft_domain = CircleDomain::new(coset2.shift(p_offset));
+        let g_hat_evaluate = CircleEvaluation::<B, BaseField, BitReversedOrder>::new(
+            inv_fft_domain,
+            g_hat.iter().map(|x| *x).collect(),
+        );
+        let poly = g_hat_evaluate.clone().interpolate();
+
+        // TODO: to check correctness of this betas result
+        let mut betas: Vec<SecureField> = r_outs
+            .iter()
+            .map(|o| poly.eval_at_point((*o).into()))
+            .collect();
+
+        channel.mix_felts(&betas);
+        all_betas.append(&mut betas);
+
+        // output += b''.join([b.to_bytes(32,"big") for b in betas])
+        // r_fold = f.exp(self.prim_root, get_pseudorandom_indices(output, self.modulus+1, 1)[0])
+        // r_comb = f.exp(self.prim_root, get_pseudorandom_indices(output, self.modulus+1, 1, start
+        // = 1)[0]) t_vals = get_pseudorandom_indices(output, 2*folded_len,
+        // self.repetition_params[i-1], start = 2) t_shifts = [t//2 for t in t_vals]
+        // t_conj = [t%2 for t in t_vals] # chee: why is r_shift separated into t_shifts and t_conj?
+        // if self.use_qm:
+        //     assert self.repetition_params[i-1]%2 == 0
+        // else:
+        //     assert (self.ood_rep + self.repetition_params[i-1])%2 == 0
     }
 
     Ok(())
 }
 
-// MOD:usize will not be needed here if the addition aldy handles modulus internally
-fn get_mul_cycle<const MOD: u32>(
-    root_of_unity: CirclePointIndex,
-    offset: CirclePointIndex,
-) -> Vec<CirclePointIndex> {
-    let mut os = vec![offset];
-
-    loop {
-        // the modulus should have been covered here?
-        let o: CirclePointIndex = os.last().unwrap().to_owned() + root_of_unity;
-        os.push(o);
-
-        if o == offset {
-            break;
-        }
-    }
-
-    os.reverse();
-    os
-}
-
 fn circ_zpoly<const MOD: u32>(
     pts: &Vec<CirclePoint<BaseField>>,
     nzero: Option<CirclePoint<BaseField>>,
-) -> Vec<Vec<M31>> {
-    let mut ans = vec![vec![M31(1)], vec![M31(0)]];
+) -> [Vec<M31>; 2] {
+    let mut ans = [vec![M31(1)], vec![M31(0)]];
     for i in 0..(pts.len() / 2) {
         ans = mul_circ_polys(&ans, &line::<MOD>(pts[2 * i], pts[2 * i + 1]));
     }
@@ -155,22 +177,16 @@ fn circ_zpoly<const MOD: u32>(
         // if nzero.is_some() &&
         let pt = pts[pts.len() - 1];
         if let Some(_pt) = nzero {
-            ans = mul_circ_polys(&ans, &vec![vec![pts[pts.len() - 1].y], vec![M31(MOD - 1)]]);
+            ans = mul_circ_polys(&ans, &[vec![pts[pts.len() - 1].y], vec![M31(MOD - 1)]]);
         } else {
-            ans = mul_circ_polys(
-                &ans,
-                &vec![vec![pts[pts.len() - 1].x, M31(MOD - 1)], vec![]],
-            );
+            ans = mul_circ_polys(&ans, &[vec![pts[pts.len() - 1].x, M31(MOD - 1)], vec![]]);
         }
     }
-
-    // if split_exts:
-    //         ans = circ_poly_to_int_poly(ans)
 
     ans
 }
 
-fn eval_circ_poly_at(polys: &Vec<Vec<M31>>, point: &CirclePoint<BaseField>) -> BaseField {
+fn eval_circ_poly_at2(polys: &[Vec<M31>; 2], point: &CirclePoint<BaseField>) -> BaseField {
     eval_poly_at(&polys[0], &point.x) + eval_poly_at(&polys[1], &point.x) * point.y
 }
 
@@ -187,17 +203,17 @@ fn eval_poly_at(poly: &Vec<M31>, pt: &BaseField) -> BaseField {
     y
 }
 
-fn line<const MOD: u32>(pt1: CirclePoint<BaseField>, pt2: CirclePoint<BaseField>) -> Vec<Vec<M31>> {
+fn line<const MOD: u32>(pt1: CirclePoint<BaseField>, pt2: CirclePoint<BaseField>) -> [Vec<M31>; 2] {
     let dx = pt1.x - pt2.x;
     if dx.is_zero() {
-        return vec![vec![pt1.x, M31(MOD - 1)], vec![]];
+        return [vec![pt1.x, M31(MOD - 1)], vec![]];
     }
 
     let slope = (pt1.y - pt2.y) / dx;
-    vec![vec![pt1.y - slope * pt1.x, slope], vec![M31(MOD - 1)]]
+    [vec![pt1.y - slope * pt1.x, slope], vec![M31(MOD - 1)]]
 }
 
-fn mul_circ_polys(a: &Vec<Vec<BaseField>>, b: &Vec<Vec<BaseField>>) -> Vec<Vec<M31>> {
+fn mul_circ_polys(a: &[Vec<BaseField>; 2], b: &[Vec<BaseField>; 2]) -> [Vec<M31>; 2] {
     let a1b1 = mul_polys(&a[1], &b[1]);
 
     let x = sub_polys(
@@ -210,19 +226,19 @@ fn mul_circ_polys(a: &Vec<Vec<BaseField>>, b: &Vec<Vec<BaseField>>) -> Vec<Vec<M
 
     let y = add_polys(&mul_polys(&a[0], &b[1]), &mul_polys(&a[1], &b[0]));
 
-    vec![x, y]
+    [x, y]
 }
 
-fn add_circ_polys(a: &Vec<Vec<BaseField>>, b: &Vec<Vec<BaseField>>) -> Vec<Vec<BaseField>> {
-    vec![add_polys(&a[0], &b[0]), add_polys(&a[1], &b[1])]
+fn add_circ_polys(a: &[Vec<BaseField>; 2], b: &[Vec<BaseField>; 2]) -> [Vec<BaseField>; 2] {
+    [add_polys(&a[0], &b[0]), add_polys(&a[1], &b[1])]
 }
 
-fn sub_circ_polys(a: &Vec<Vec<BaseField>>, b: &Vec<Vec<BaseField>>) -> Vec<Vec<BaseField>> {
-    vec![sub_polys(&a[0], &b[0]), sub_polys(&a[1], &b[1])]
+fn sub_circ_polys(a: &[Vec<BaseField>; 2], b: &[Vec<BaseField>; 2]) -> [Vec<BaseField>; 2] {
+    [sub_polys(&a[0], &b[0]), sub_polys(&a[1], &b[1])]
 }
 
-fn mul_circ_by_const(a: &Vec<Vec<BaseField>>, c: &BaseField) -> Vec<Vec<BaseField>> {
-    vec![mul_poly_by_const(&a[0], &c), mul_poly_by_const(&a[1], &c)]
+fn mul_circ_by_const(a: &[Vec<BaseField>; 2], c: &BaseField) -> [Vec<BaseField>; 2] {
+    [mul_poly_by_const(&a[0], &c), mul_poly_by_const(&a[1], &c)]
 }
 
 fn mul_polys(a: &Vec<BaseField>, b: &Vec<BaseField>) -> Vec<BaseField> {
@@ -267,35 +283,33 @@ fn mul_poly_by_const(poly: &Vec<BaseField>, constant: &BaseField) -> Vec<BaseFie
     poly.iter().map(|coeff| *coeff * *constant).collect()
 }
 
-// TODO: use enums for error strings
 fn circ_lagrange_interp(
     pts: &Vec<CirclePointIndex>,
     vals: &Vec<BaseField>,
     normalize: bool,
-) -> Result<Vec<Vec<BaseField>>, String> {
+) -> Result<[Vec<M31>; 2], String> {
     if pts.len() != vals.len() {
-        return Err("Cannot interoplate".to_owned());
+        return Err("Cannot interpolate".to_owned());
     }
 
     let mut n_pts = vec![];
     let mut n_vals = vec![];
 
-    for i in 0..pts.len() - 1 {
+    for i in 0..pts.len() {
         let mut p_conj = pts[i].to_point().all_conj();
         let mut v_conj = vals[i].all_conj();
 
         if p_conj.len() != v_conj.len() {
-            return Err("Cannot interoplate".to_owned());
+            return Err("Cannot interpolate".to_owned());
         }
 
         n_pts.append(&mut p_conj);
         n_vals.append(&mut v_conj);
     }
-
     let pts = n_pts;
     let vals = n_vals;
 
-    let mut ans = vec![vec![], vec![]];
+    let mut ans = [vec![], vec![]];
     for i in 0..pts.len() {
         let pts_removed = pts[..i]
             .iter()
@@ -303,7 +317,7 @@ fn circ_lagrange_interp(
             .cloned()
             .collect();
         let pol = circ_zpoly::<P>(&pts_removed, Some(pts[i]));
-        let scale = vals[i] / eval_circ_poly_at(&pol, &pts[i]);
+        let scale = vals[i] / eval_circ_poly_at2(&pol, &pts[i]);
         ans = add_circ_polys(&ans, &mul_circ_by_const(&pol, &scale));
     }
 
@@ -320,12 +334,11 @@ fn circ_lagrange_interp(
     }
 
     for i in 0..pts.len() {
-        let eval = eval_circ_poly_at(&ans, &pts[i]);
+        let eval = eval_circ_poly_at2(&ans, &pts[i]);
         if eval != vals[i] {
             return Err("Cannot interoplate".to_owned());
         }
     }
-    // return circ_poly_to_int_poly(ans)
 
     Ok(ans)
 }
@@ -423,8 +436,10 @@ impl CirclePoint<BaseField> {
 #[cfg(test)]
 mod tests {
     use super::super::fields::m31::P;
-    use super::get_mul_cycle;
+    use super::Conjugate;
     use crate::core::circle::CirclePointIndex;
+    use crate::core::fields::cm31::CM31;
+    use crate::core::fields::m31::BaseField;
     use crate::core::pcs::PcsConfig;
     use crate::core::poly::circle::CanonicCoset;
 
@@ -436,8 +451,70 @@ mod tests {
             .circle_domain()
             .half_coset;
 
-        let root_of_unity = coset.initial_index * coset.step_size.0;
-        let xs = get_mul_cycle::<P>(root_of_unity, CirclePointIndex(1));
+        let xs = coset.get_mul_cycle(CirclePointIndex(1));
         println!("{:?}", xs);
     }
+
+    // def all_conj(p):
+    //     if isinstance(p,Gaussian):
+    //         if isinstance(p.x,int):
+    //             return [p]
+    //         else:
+    //             return [Gaussian(x,y) for x,y in zip(p.x.all_conj(),p.y.all_conj())]
+    //     else:
+    //         if isinstance(p,int):
+    //             return [p]
+    //         else:
+    //             return p.all_conj()
+
+    #[test]
+    fn test_base_field_all_conj() {
+        // will return itself
+        let val = BaseField::from(123);
+        let conjs = val.all_conj();
+
+        assert_eq!(conjs.len(), 1);
+        assert_eq!(conjs[0], val);
+    }
+
+    #[test]
+    fn test_cm31_all_conj() {
+        // return [self,CM(self.a,-self.b,self.modulus)]
+        let val = CM31::from_m31(BaseField::from(123), BaseField::from(321));
+        let conjs = val.all_conj();
+
+        assert_eq!(conjs.len(), 2);
+        assert_eq!(conjs[0], val);
+        assert_eq!(
+            conjs[1],
+            CM31::from_m31(BaseField::from(123), BaseField::from(-321))
+        )
+    }
+
+    #[test]
+    fn test_qm31_all_conj() {
+        todo!();
+        // // conj = [self,QM(self.A,-self.B,self.param)]
+        // // return conj + [c**self.A.modulus for c in conj] # applying frobenius
+        // let base_1 = BaseField::from(123);
+        // let base_2 = BaseField::from(234);
+        // let base_3 = BaseField::from(345);
+        // let base_4 = BaseField::from(567);
+
+        // let val = QM31::from_m31(base_1, base_2, base_3, base_4);
+        // let conjs = val.all_conj();
+
+        // assert_eq!(conjs.len(), 4);
+        // assert_eq!(conjs[0], val);
+        // assert_eq!(conjs[1], QM31::from_m31(base_1, base_2, -base_3, -base_4));
+        // // assert for all remaining conjugates
+    }
+
+    // base field
+    // cm31
+    // qm31
+
+    // circlepoint(basefield)
+    // circlepoint(cm31)
+    // circlepoint(qm31)
 }
