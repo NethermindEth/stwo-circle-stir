@@ -1,12 +1,14 @@
 #![allow(unused_variables)]
 #![allow(unused_assignments)]
 
+use std::collections::BTreeMap;
+
 use itertools::max;
 use num_traits::{One, Zero};
 
-use super::backend::BackendForChannel;
+use super::backend::{BackendForChannel, Column};
 use super::channel::{Channel, MerkleChannel};
-use super::circle::{CirclePoint, CirclePointIndex, Coset};
+use super::circle::{CirclePoint, CirclePointIndex, Coset, M31_CIRCLE_GEN};
 use super::fields::cm31::CM31;
 use super::fields::m31::{BaseField, M31, P};
 use super::fields::qm31::{SecureField, QM31};
@@ -19,13 +21,15 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
     channel: &mut MC::C,
     mut coset: Coset,
     eval_sizes: Vec<usize>,
+    repetition_params: Vec<usize>,
     folding_params: Vec<usize>,
     values: &Vec<BaseField>,
     eval_offsets: &Vec<CirclePointIndex>,
 ) -> Result<(), String> {
     let ood_rep = 1;
-    let mut output = vec![];
+    let mut output_roots = vec![];
     let mut all_betas = vec![];
+    let mut output_branches = vec![];
 
     let mut xs = coset.get_mul_cycle(eval_offsets[0]);
     // TODO: can we refactor this step of getting the conjugates? maybe somehow using `conjugate`
@@ -40,16 +44,18 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
     let vals = values.to_owned();
     // TODO: to check if this is correct
     // TODO: always combine commit with mix_root?
-    let merkle_tree: MerkleProver<B, MC::H> =
-        MerkleProver::commit(vec![&vals.iter().map(|x| *x).collect()]);
-    output.push(merkle_tree.root());
+    let mut merkle_tree_val_log_size = vals.len().ilog2();
+    let mut merkle_tree_val = vals.iter().map(|x| *x).collect();
+    let mut merkle_tree: MerkleProver<B, MC::H> = MerkleProver::commit(vec![&merkle_tree_val]);
+    output_roots.push(merkle_tree.root());
 
     MC::mix_root(channel, merkle_tree.root());
 
+    // TODO: not correct as we are not surd that the x and y are indeed on the circle
+    // primitive root for M31 Gaussian(311014874, 1584694829)
+    // CirclePoint mul by M31 value
     let rnd = channel.draw_felt();
-    let rnd_x = rnd.0 .0;
-    let rnd_y = rnd.0 .1;
-    let r_fold = CirclePoint { x: rnd_x, y: rnd_y };
+    let mut r_fold = M31_CIRCLE_GEN.mul(rnd.0 .0 .0.into());
 
     for i in 1..folding_params.len() + 1 {
         // # fold using r-fold
@@ -87,7 +93,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
                 let point =
                     r_fold.mul_circle_point(xs[k + eval_sizes[i - 1] * l].to_point().conjugate());
 
-                let eval = eval_circ_poly_at2(&polys, &point);
+                let eval = eval_circ_poly_at(&polys, &point);
                 g_hat.push(eval);
             }
         }
@@ -124,7 +130,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
         let g_hat_shift = poly.evaluate(shifted_domain);
 
         let m2: MerkleProver<B, MC::H> = MerkleProver::commit(vec![&g_hat_shift.values]);
-        output.push(m2.root());
+        output_roots.push(m2.root());
 
         MC::mix_root(channel, merkle_tree.root());
 
@@ -150,16 +156,73 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
         channel.mix_felts(&betas);
         all_betas.append(&mut betas);
 
-        // output += b''.join([b.to_bytes(32,"big") for b in betas])
-        // r_fold = f.exp(self.prim_root, get_pseudorandom_indices(output, self.modulus+1, 1)[0])
-        // r_comb = f.exp(self.prim_root, get_pseudorandom_indices(output, self.modulus+1, 1, start
-        // = 1)[0]) t_vals = get_pseudorandom_indices(output, 2*folded_len,
-        // self.repetition_params[i-1], start = 2) t_shifts = [t//2 for t in t_vals]
-        // t_conj = [t%2 for t in t_vals] # chee: why is r_shift separated into t_shifts and t_conj?
-        // if self.use_qm:
-        //     assert self.repetition_params[i-1]%2 == 0
-        // else:
-        //     assert (self.ood_rep + self.repetition_params[i-1])%2 == 0
+        let rnds = channel.draw_felts(2);
+        r_fold = M31_CIRCLE_GEN.mul(rnds[0].0 .0 .0.into());
+        let r_comb = M31_CIRCLE_GEN.mul(rnds[0].0 .0 .0.into());
+
+        // mix again to get randomness of the next value
+        channel.mix_felts(&rnds);
+        let t_vals_bytes = channel.draw_random_bytes();
+        let t_vals_bytes = [
+            t_vals_bytes[0],
+            t_vals_bytes[1],
+            t_vals_bytes[2],
+            t_vals_bytes[3],
+        ];
+
+        let t_vals = u32::from_be_bytes(t_vals_bytes) % ((2 * folded_len) as u32);
+        let t_shifts: Vec<u32> = (0..t_vals).map(|t| t / 2).collect();
+        let t_conj: Vec<u32> = (0..t_vals).map(|t| t % 2).collect();
+
+        if repetition_params[i - 1] % 2 != 0 {
+            return Err("self.repetition_params[i-1]%2 != 0".to_owned());
+        }
+
+        // rs = r_outs + [f.mul(p_offset,f.exp(rt2,t)).conj(k)%self.modulus for (t,k) in
+        // zip(t_shifts,t_conj)]
+        let mut rs = r_outs;
+        for (t, k) in t_shifts.iter().zip(t_conj.iter()) {
+            let rt2_exp = coset2.repeated_double(t.ilog2());
+            let intr: CirclePointIndex = p_offset + rt2_exp.initial_index;
+            // can convert intr to QM31 using from_m31 (with b,c,d be zero)
+
+            // TODO: apply conj(k)
+            // question: this is CirclePointIndex, how do i convert this to QM31?
+            // rs.push(intr);
+        }
+
+        // g_rs = betas + [g_hat[t + k*folded_len] for (t,k) in zip(t_shifts,t_conj)]
+        // TODO: rs and g_rs can be combined
+        let mut g_rs = betas;
+        for (t, k) in t_shifts.iter().zip(t_conj.iter()) {
+            // question: same issue here, betas are in QM31 and g_hat is in BaseField
+            // g_rs.push(g_hat[(*t as usize) + (*k as usize) * folded_len]);
+        }
+
+        let mut queried_index = vec![];
+        for j in 0..folding_params[i - 1] {
+            for (t, k) in t_shifts.iter().zip(t_conj.iter()) {
+                let index = (*t as usize) + (j * folded_len) + ((*k as usize) * eval_sizes[i - 1]);
+                queried_index.push(index);
+            }
+        }
+
+        let mut queries = BTreeMap::<u32, Vec<usize>>::new();
+        queries.insert(merkle_tree_val_log_size, queried_index);
+
+        let (_values, decommitment) = merkle_tree.decommit(queries.clone(), vec![&merkle_tree_val]);
+        output_branches.push(decommitment);
+
+        // m = m2
+        // TODO: merkle_tree_val_log_size can be removed by getting length from merkle_tree_val
+        merkle_tree_val_log_size = g_hat_shift.values.len().ilog2();
+        merkle_tree_val = g_hat_shift.values;
+        merkle_tree = m2;
+
+        // Question: how do we lagrange interpolate QM31?? 
+        // pol = f.circ_lagrange_interp(rs,g_rs)
+        // pol_vals = [f.eval_circ_poly_at(pol,x) for x in xs]
+        // zpol = f.circ_zpoly(rs)
     }
 
     Ok(())
@@ -186,7 +249,9 @@ fn circ_zpoly<const MOD: u32>(
     ans
 }
 
-fn eval_circ_poly_at2(polys: &[Vec<M31>; 2], point: &CirclePoint<BaseField>) -> BaseField {
+
+// TODO: to support for both BaseField and SecureField
+fn eval_circ_poly_at(polys: &[Vec<M31>; 2], point: &CirclePoint<BaseField>) -> BaseField {
     eval_poly_at(&polys[0], &point.x) + eval_poly_at(&polys[1], &point.x) * point.y
 }
 
@@ -283,6 +348,7 @@ fn mul_poly_by_const(poly: &Vec<BaseField>, constant: &BaseField) -> Vec<BaseFie
     poly.iter().map(|coeff| *coeff * *constant).collect()
 }
 
+// TODO: to refactor to support for both BaseField and SecureField
 fn circ_lagrange_interp(
     pts: &Vec<CirclePointIndex>,
     vals: &Vec<BaseField>,
@@ -317,7 +383,7 @@ fn circ_lagrange_interp(
             .cloned()
             .collect();
         let pol = circ_zpoly::<P>(&pts_removed, Some(pts[i]));
-        let scale = vals[i] / eval_circ_poly_at2(&pol, &pts[i]);
+        let scale = vals[i] / eval_circ_poly_at(&pol, &pts[i]);
         ans = add_circ_polys(&ans, &mul_circ_by_const(&pol, &scale));
     }
 
@@ -334,7 +400,7 @@ fn circ_lagrange_interp(
     }
 
     for i in 0..pts.len() {
-        let eval = eval_circ_poly_at2(&ans, &pts[i]);
+        let eval = eval_circ_poly_at(&ans, &pts[i]);
         if eval != vals[i] {
             return Err("Cannot interoplate".to_owned());
         }
@@ -435,7 +501,6 @@ impl CirclePoint<BaseField> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::fields::m31::P;
     use super::Conjugate;
     use crate::core::circle::CirclePointIndex;
     use crate::core::fields::cm31::CM31;

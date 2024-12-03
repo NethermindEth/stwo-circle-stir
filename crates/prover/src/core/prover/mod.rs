@@ -52,7 +52,7 @@ pub fn prove_stir<B: BackendForChannel<MC>, MC: MerkleChannel>(
     span.exit();
 
     // get r_fold from F
-    let _r_fold = CirclePoint::<BaseField>::get_random_point(channel);
+    // let _r_fold = CirclePoint::<BaseField>::get_random_point(channel);
     for i in 0..folding_parameters.len() {
         assert!(eval_sizes[i] % folding_parameters[i] == 0);
         let _folded_len = eval_sizes[i] / folding_parameters[i];

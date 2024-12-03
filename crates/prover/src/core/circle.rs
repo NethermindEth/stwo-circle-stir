@@ -161,15 +161,6 @@ impl<F: Field> ComplexConjugate for CirclePoint<F> {
     }
 }
 
-impl CirclePoint<BaseField> {
-    pub fn get_random_point<C: Channel>(channel: &mut C) -> Self {
-        let t = channel.draw_felt();
-        let x = t.0 .0;
-        let y = t.0 .1;
-
-        Self { x, y }
-    }
-}
 
 impl CirclePoint<SecureField> {
     pub fn get_point(index: u128) -> Self {
