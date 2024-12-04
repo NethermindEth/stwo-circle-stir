@@ -81,6 +81,9 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
                     .map(|j| vals[k + folded_len * j + eval_sizes[i - 1] * l])
                     .collect();
                 // TODO: proper error handling instead of using 'unwrap'
+                // let xs2s_points = xs2s[l].iter().map(|x| (*x).to_point()).collect();
+                // let inpl = circ_lagrange_interp(&xs2s_points, &interp_vals, true).unwrap();
+                // TODO: replace circ_lagrange_interp to accept `CirclePoint<F>` instead of `CirclePointIndex`
                 let inpl = circ_lagrange_interp(&xs2s[l], &interp_vals, true).unwrap();
                 x_polys.push(inpl);
             }
@@ -138,7 +141,11 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
         let mut xs_conj: Vec<CirclePointIndex> = xs.iter().map(|x| x.conj()).collect();
         xs.append(&mut xs_conj);
 
-        let r_outs = channel.draw_felts(ood_rep);
+        let r_outs: Vec<CirclePoint<SecureField>> = channel
+            .draw_felts(ood_rep)
+            .iter()
+            .map(|v| (*v).into())
+            .collect();
 
         let inv_fft_domain = CircleDomain::new(coset2.shift(p_offset));
         let g_hat_evaluate = CircleEvaluation::<B, BaseField, BitReversedOrder>::new(
@@ -183,11 +190,12 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
         let mut rs = r_outs;
         for (t, k) in t_shifts.iter().zip(t_conj.iter()) {
             let rt2_exp = coset2.repeated_double(t.ilog2());
-            let intr: CirclePointIndex = p_offset + rt2_exp.initial_index;
-            // can convert intr to QM31 using from_m31 (with b,c,d be zero)
+            let mut intr: CirclePointIndex = p_offset + rt2_exp.initial_index;
+            if k % 2 != 0 {
+                intr = intr.conj();
+            }
 
-            // TODO: apply conj(k)
-            // question: this is CirclePointIndex, how do i convert this to QM31?
+            // question: how to convert CirclePoint<BaseField> to CirclePoint<SecureField)>?
             // rs.push(intr);
         }
 
@@ -195,8 +203,13 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
         // TODO: rs and g_rs can be combined
         let mut g_rs = betas;
         for (t, k) in t_shifts.iter().zip(t_conj.iter()) {
-            // question: same issue here, betas are in QM31 and g_hat is in BaseField
-            // g_rs.push(g_hat[(*t as usize) + (*k as usize) * folded_len]);
+            let g_value = g_hat[(*t as usize) + (*k as usize) * folded_len];
+            g_rs.push(SecureField::from_m31(
+                g_value,
+                BaseField::zero(),
+                BaseField::zero(),
+                BaseField::zero(),
+            ))
         }
 
         let mut queried_index = vec![];
@@ -219,7 +232,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
         merkle_tree_val = g_hat_shift.values;
         merkle_tree = m2;
 
-        // Question: how do we lagrange interpolate QM31?? 
+        // Question: how do we lagrange interpolate QM31??
         // pol = f.circ_lagrange_interp(rs,g_rs)
         // pol_vals = [f.eval_circ_poly_at(pol,x) for x in xs]
         // zpol = f.circ_zpoly(rs)
@@ -248,7 +261,6 @@ fn circ_zpoly<const MOD: u32>(
 
     ans
 }
-
 
 // TODO: to support for both BaseField and SecureField
 fn eval_circ_poly_at(polys: &[Vec<M31>; 2], point: &CirclePoint<BaseField>) -> BaseField {
