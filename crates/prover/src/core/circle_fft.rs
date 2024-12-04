@@ -12,10 +12,11 @@ use super::circle::{CirclePoint, CirclePointIndex, Coset, M31_CIRCLE_GEN};
 use super::fields::cm31::CM31;
 use super::fields::m31::{BaseField, M31, P};
 use super::fields::qm31::{SecureField, QM31};
-use super::fields::FieldExpOps;
+use super::fields::{Field, FieldExpOps};
 use super::poly::circle::{CircleDomain, CircleEvaluation};
 use super::poly::BitReversedOrder;
 use super::vcs::prover::MerkleProver;
+use crate::core::fields::ComplexConjugate;
 
 pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
     channel: &mut MC::C,
@@ -83,7 +84,8 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
                 // TODO: proper error handling instead of using 'unwrap'
                 // let xs2s_points = xs2s[l].iter().map(|x| (*x).to_point()).collect();
                 // let inpl = circ_lagrange_interp(&xs2s_points, &interp_vals, true).unwrap();
-                // TODO: replace circ_lagrange_interp to accept `CirclePoint<F>` instead of `CirclePointIndex`
+                // TODO: replace circ_lagrange_interp to accept `CirclePoint<F>` instead of
+                // `CirclePointIndex`
                 let inpl = circ_lagrange_interp(&xs2s[l], &interp_vals, true).unwrap();
                 x_polys.push(inpl);
             }
@@ -185,8 +187,6 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
             return Err("self.repetition_params[i-1]%2 != 0".to_owned());
         }
 
-        // rs = r_outs + [f.mul(p_offset,f.exp(rt2,t)).conj(k)%self.modulus for (t,k) in
-        // zip(t_shifts,t_conj)]
         let mut rs = r_outs;
         for (t, k) in t_shifts.iter().zip(t_conj.iter()) {
             let rt2_exp = coset2.repeated_double(t.ilog2());
@@ -194,9 +194,21 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
             if k % 2 != 0 {
                 intr = intr.conj();
             }
-
-            // question: how to convert CirclePoint<BaseField> to CirclePoint<SecureField)>?
-            // rs.push(intr);
+            let intr = intr.to_point();
+            rs.push(CirclePoint::<QM31> {
+                x: QM31::from_m31(
+                    intr.x,
+                    BaseField::zero(),
+                    BaseField::zero(),
+                    BaseField::zero(),
+                ),
+                y: QM31::from_m31(
+                    intr.y,
+                    BaseField::zero(),
+                    BaseField::zero(),
+                    BaseField::zero(),
+                ),
+            })
         }
 
         // g_rs = betas + [g_hat[t + k*folded_len] for (t,k) in zip(t_shifts,t_conj)]
@@ -244,7 +256,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
 fn circ_zpoly<const MOD: u32>(
     pts: &Vec<CirclePoint<BaseField>>,
     nzero: Option<CirclePoint<BaseField>>,
-) -> [Vec<M31>; 2] {
+) -> [Vec<BaseField>; 2] {
     let mut ans = [vec![M31(1)], vec![M31(0)]];
     for i in 0..(pts.len() / 2) {
         ans = mul_circ_polys(&ans, &line::<MOD>(pts[2 * i], pts[2 * i + 1]));
@@ -360,12 +372,57 @@ fn mul_poly_by_const(poly: &Vec<BaseField>, constant: &BaseField) -> Vec<BaseFie
     poly.iter().map(|coeff| *coeff * *constant).collect()
 }
 
+fn circ_lagrange_interp2<F>(
+    pts: &Vec<CirclePoint<F>>,
+    vals: &Vec<F>,
+    normalize: bool,
+) -> Result<[Vec<F>; 2], String>
+where
+    F: Field + AllConjugate,
+    CirclePoint<F>: AllConjugate,
+{
+    if pts.len() != vals.len() {
+        return Err("Cannot interpolate".to_owned());
+    }
+
+    let mut n_pts = vec![];
+    let mut n_vals = vec![];
+
+    for i in 0..pts.len() {
+        let mut p_conj = pts[i].all_conj();
+        let mut v_conj = vals[i].all_conj();
+
+        if p_conj.len() != v_conj.len() {
+            return Err("Cannot interpolate".to_owned());
+        }
+
+        n_pts.append(&mut p_conj);
+        n_vals.append(&mut v_conj);
+    }
+    let pts = n_pts;
+    let vals = n_vals;
+
+    // let mut ans = [vec![], vec![]];
+    // for i in 0..pts.len() {
+    //     let pts_removed = pts[..i]
+    //         .iter()
+    //         .chain(pts[i + 1..].iter())
+    //         .cloned()
+    //         .collect();
+    //     let pol = circ_zpoly::<P>(&pts_removed, Some(pts[i]));
+    //     let scale = vals[i] / eval_circ_poly_at(&pol, &pts[i]);
+    //     ans = add_circ_polys(&ans, &mul_circ_by_const(&pol, &scale));
+    // }
+
+    Ok([vec![], vec![]])
+}
+
 // TODO: to refactor to support for both BaseField and SecureField
 fn circ_lagrange_interp(
     pts: &Vec<CirclePointIndex>,
     vals: &Vec<BaseField>,
     normalize: bool,
-) -> Result<[Vec<M31>; 2], String> {
+) -> Result<[Vec<BaseField>; 2], String> {
     if pts.len() != vals.len() {
         return Err("Cannot interpolate".to_owned());
     }
@@ -433,27 +490,28 @@ impl Conj for CirclePointIndex {
     }
 }
 
-trait Conjugate<T> {
-    fn all_conj(&self) -> Vec<T>;
+// TODO: probably refactor this into the ComplexConjugate trait
+trait AllConjugate {
+    fn all_conj(&self) -> Vec<Self>
+    where
+        Self: Sized;
 }
 
-impl Conjugate<BaseField> for BaseField {
-    fn all_conj(&self) -> Vec<BaseField> {
+impl AllConjugate for BaseField {
+    fn all_conj(&self) -> Vec<Self> {
         vec![*self]
     }
 }
 
-impl Conjugate<CM31> for CM31 {
-    fn all_conj(&self) -> Vec<CM31> {
-        vec![*self, CM31(self.0, -self.1)]
+impl AllConjugate for CM31 {
+    fn all_conj(&self) -> Vec<Self> {
+        vec![*self, self.complex_conjugate()]
     }
 }
 
-impl Conjugate<QM31> for QM31 {
-    fn all_conj(&self) -> Vec<QM31> {
-        // todo!()
-
-        let mut conj = vec![*self, QM31(self.0, -self.1)];
+impl AllConjugate for QM31 {
+    fn all_conj(&self) -> Vec<Self> {
+        let mut conj = vec![*self, self.complex_conjugate()];
         let mut conj_2: Vec<QM31> = conj.iter().map(|c| c.pow(P.into())).collect();
 
         conj.append(&mut conj_2);
@@ -461,14 +519,14 @@ impl Conjugate<QM31> for QM31 {
     }
 }
 
-impl Conjugate<CirclePoint<BaseField>> for CirclePoint<BaseField> {
-    fn all_conj(&self) -> Vec<CirclePoint<BaseField>> {
+impl AllConjugate for CirclePoint<BaseField> {
+    fn all_conj(&self) -> Vec<Self> {
         return vec![*self];
     }
 }
 
-impl Conjugate<CirclePoint<CM31>> for CirclePoint<CM31> {
-    fn all_conj(&self) -> Vec<CirclePoint<CM31>> {
+impl AllConjugate for CirclePoint<CM31> {
+    fn all_conj(&self) -> Vec<Self> {
         let x = &self.x.all_conj();
         let y = &self.y.all_conj();
 
@@ -479,8 +537,8 @@ impl Conjugate<CirclePoint<CM31>> for CirclePoint<CM31> {
     }
 }
 
-impl Conjugate<CirclePoint<QM31>> for CirclePoint<QM31> {
-    fn all_conj(&self) -> Vec<CirclePoint<QM31>> {
+impl AllConjugate for CirclePoint<QM31> {
+    fn all_conj(&self) -> Vec<Self> {
         let x = &self.x.all_conj();
         let y = &self.y.all_conj();
 
@@ -513,7 +571,7 @@ impl CirclePoint<BaseField> {
 
 #[cfg(test)]
 mod tests {
-    use super::Conjugate;
+    use super::AllConjugate;
     use crate::core::circle::CirclePointIndex;
     use crate::core::fields::cm31::CM31;
     use crate::core::fields::m31::BaseField;
