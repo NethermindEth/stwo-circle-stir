@@ -16,7 +16,7 @@ pub const P2: u64 = 4611686014132420609; // (2 ** 31 - 1) ** 2
 #[derive(Copy, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 pub struct CM31(pub M31, pub M31);
 
-impl_field!(CM31, P2);
+impl_field!(CM31, P2:u64);
 impl_extension_field!(CM31, M31);
 
 impl CM31 {

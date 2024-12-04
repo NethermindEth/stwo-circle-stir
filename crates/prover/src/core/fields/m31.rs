@@ -32,7 +32,7 @@ pub const P: u32 = 2147483647; // 2 ** 31 - 1
 pub struct M31(pub u32);
 pub type BaseField = M31;
 
-impl_field!(M31, P);
+impl_field!(M31, P:u32);
 
 impl M31 {
     /// Returns `val % P` when `val` is in the range `[0, 2P)`.

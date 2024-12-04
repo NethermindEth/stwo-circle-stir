@@ -112,6 +112,10 @@ pub trait Field:
     + Sum
     + for<'a> Sum<&'a Self>
 {
+    type FieldSizeType;
+
+    fn field_size(&self) -> Self::FieldSizeType;
+
     fn double(&self) -> Self {
         *self + *self
     }
@@ -162,7 +166,9 @@ impl<F: Field> ExtensionOf<F> for F {
 
 #[macro_export]
 macro_rules! impl_field {
-    ($field_name: ty, $field_size: ident) => {
+
+    // $($field_name:ident : $field_type:ty)
+    ($field_name: ty, $field_size: ident: $field_size_type: ty) => {
         use std::iter::{Product, Sum};
 
         use num_traits::{Num, One, Zero};
@@ -179,7 +185,13 @@ macro_rules! impl_field {
             }
         }
 
-        impl Field for $field_name {}
+        impl Field for $field_name {
+            type FieldSizeType = $field_size_type;
+
+            fn field_size(&self) -> Self::FieldSizeType {
+                $field_size
+            }
+        }
 
         impl AddAssign for $field_name {
             fn add_assign(&mut self, rhs: Self) {
