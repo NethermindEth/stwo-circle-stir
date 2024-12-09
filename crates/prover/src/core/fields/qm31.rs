@@ -21,7 +21,7 @@ pub const R: CM31 = CM31::from_u32_unchecked(2, 1);
 pub struct QM31(pub CM31, pub CM31);
 pub type SecureField = QM31;
 
-impl_field!(QM31, P4: u128);
+impl_field!(QM31, P4);
 impl_extension_field!(QM31, CM31);
 
 impl QM31 {

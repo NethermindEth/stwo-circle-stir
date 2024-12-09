@@ -259,6 +259,15 @@ impl CirclePointIndex {
         let res = s * self.0 as isize / g;
         Some(res)
     }
+
+    pub fn to_secure_field_point(self) -> CirclePoint<SecureField> {
+        let point = M31_CIRCLE_GEN.mul(self.0 as u128);
+
+        CirclePoint::<SecureField> {
+            x: SecureField::from_m31(point.x, M31::zero(), M31::zero(), M31::zero()),
+            y: SecureField::from_m31(point.y, M31::zero(), M31::zero(), M31::zero())
+        }
+    }
 }
 
 impl Add for CirclePointIndex {

@@ -194,21 +194,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
             if k % 2 != 0 {
                 intr = intr.conj();
             }
-            let intr = intr.to_point();
-            rs.push(CirclePoint::<QM31> {
-                x: QM31::from_m31(
-                    intr.x,
-                    BaseField::zero(),
-                    BaseField::zero(),
-                    BaseField::zero(),
-                ),
-                y: QM31::from_m31(
-                    intr.y,
-                    BaseField::zero(),
-                    BaseField::zero(),
-                    BaseField::zero(),
-                ),
-            })
+            rs.push(intr.to_secure_field_point())
         }
 
         // g_rs = betas + [g_hat[t + k*folded_len] for (t,k) in zip(t_shifts,t_conj)]
@@ -244,14 +230,44 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
         merkle_tree_val = g_hat_shift.values;
         merkle_tree = m2;
 
-        // Question: how do we lagrange interpolate QM31??
-        // pol = f.circ_lagrange_interp(rs,g_rs)
-        // pol_vals = [f.eval_circ_poly_at(pol,x) for x in xs]
-        // zpol = f.circ_zpoly(rs)
+        let pol = circ_lagrange_interp2(&rs, &g_rs, false).unwrap();
+        let pol_vals: Vec<SecureField> = xs
+            .iter()
+            .map(|x| eval_circ_poly_at2(&pol, &x.to_secure_field_point()))
+            .collect();
+        let zpol = circ_zpoly2(&rs, None);
+
+        for j in 0..2 * eval_sizes[i] {
+            let xxxx = merkle_tree_val.at(j)
+                - pol_vals[j] / eval_circ_poly_at2(&zpol, &xs[j].to_secure_field_point());
+
+            let yyyy = geom_sum((xs[j].to_point() * r_comb).x, rs.len());
+        }
+        // vals = [f.mul(f.div(g_hat_shift[j] - pol_vals[j],f.eval_circ_poly_at(zpol,xs[j])),
+        // f.geom_sum((xs[j]*r_comb).x,len(rs))) for j in range(2*self.eval_sizes[i])]
     }
 
     Ok(())
 }
+
+fn geom_sum<F: Field>(x: F, p: usize) -> F {
+    let mut ans = F::one();
+    let mut prod = F::one();
+
+    for _ in 0..p {
+        prod = prod * x;
+        ans = ans + prod;
+    }
+
+    ans
+}
+// def geom_sum(self, x, p):
+//         ans = 1
+//         prod = 1
+//         for _ in range(p):
+//             prod = self.mul(prod,x)
+//             ans = self.add(ans,prod)
+//         return ans
 
 fn circ_zpoly<const MOD: u32>(
     pts: &Vec<CirclePoint<BaseField>>,
@@ -274,15 +290,49 @@ fn circ_zpoly<const MOD: u32>(
     ans
 }
 
+fn circ_zpoly2<F: Field>(pts: &Vec<CirclePoint<F>>, nzero: Option<CirclePoint<F>>) -> [Vec<F>; 2] {
+    let mut ans = [vec![F::one()], vec![F::zero()]];
+    for i in 0..(pts.len() / 2) {
+        ans = mul_circ_polys2(&ans, &line2(pts[2 * i], pts[2 * i + 1]));
+    }
+    if pts.len() % 2 == 1 {
+        // if nzero.is_some() &&
+        let pt = pts[pts.len() - 1];
+        if let Some(_pt) = nzero {
+            ans = mul_circ_polys2(&ans, &[vec![pts[pts.len() - 1].y], vec![-F::one()]]);
+        } else {
+            ans = mul_circ_polys2(&ans, &[vec![pts[pts.len() - 1].x, -F::one()], vec![]]);
+        }
+    }
+
+    ans
+}
+
 // TODO: to support for both BaseField and SecureField
 fn eval_circ_poly_at(polys: &[Vec<M31>; 2], point: &CirclePoint<BaseField>) -> BaseField {
     eval_poly_at(&polys[0], &point.x) + eval_poly_at(&polys[1], &point.x) * point.y
+}
+fn eval_circ_poly_at2<F: Field>(polys: &[Vec<F>; 2], point: &CirclePoint<F>) -> F {
+    eval_poly_at2(&polys[0], &point.x) + eval_poly_at2(&polys[1], &point.x) * point.y
 }
 
 // Evaluate a polynomial at a point
 fn eval_poly_at(poly: &Vec<M31>, pt: &BaseField) -> BaseField {
     let mut y = BaseField::zero();
     let mut power_of_x = BaseField::one();
+
+    for coeff in poly.iter() {
+        y += power_of_x * *coeff;
+        power_of_x = power_of_x * *pt;
+    }
+
+    y
+}
+
+// Evaluate a polynomial at a point
+fn eval_poly_at2<F: Field>(poly: &Vec<F>, pt: &F) -> F {
+    let mut y = F::zero();
+    let mut power_of_x = F::one();
 
     for coeff in poly.iter() {
         y += power_of_x * *coeff;
@@ -302,6 +352,19 @@ fn line<const MOD: u32>(pt1: CirclePoint<BaseField>, pt2: CirclePoint<BaseField>
     [vec![pt1.y - slope * pt1.x, slope], vec![M31(MOD - 1)]]
 }
 
+// question: how does this self.modulus - 1 get translated to a QM value? because QM is comprises of
+// 4 M31 values
+fn line2<F: Field>(pt1: CirclePoint<F>, pt2: CirclePoint<F>) -> [Vec<F>; 2] {
+    let dx = pt1.x - pt2.x;
+    if dx.is_zero() {
+        return [vec![pt1.x, -F::one()], vec![]]; // -F::one() equivalent to the baseField's P-1 F
+                                                 // can be any extension of the basefield
+    }
+
+    let slope = (pt1.y - pt2.y) / dx;
+    [vec![pt1.y - slope * pt1.x, slope], vec![-F::one()]]
+}
+
 fn mul_circ_polys(a: &[Vec<BaseField>; 2], b: &[Vec<BaseField>; 2]) -> [Vec<M31>; 2] {
     let a1b1 = mul_polys(&a[1], &b[1]);
 
@@ -318,20 +381,59 @@ fn mul_circ_polys(a: &[Vec<BaseField>; 2], b: &[Vec<BaseField>; 2]) -> [Vec<M31>
     [x, y]
 }
 
+fn mul_circ_polys2<F: Field>(a: &[Vec<F>; 2], b: &[Vec<F>; 2]) -> [Vec<F>; 2] {
+    let a1b1 = mul_polys2(&a[1], &b[1]);
+
+    let x = sub_polys2(
+        &add_polys2(&mul_polys2(&a[0], &b[0]), &a1b1),
+        &vec![F::zero(), F::zero()]
+            .into_iter()
+            .chain(a1b1.into_iter())
+            .collect(),
+    );
+
+    let y = add_polys2(&mul_polys2(&a[0], &b[1]), &mul_polys2(&a[1], &b[0]));
+
+    [x, y]
+}
+
 fn add_circ_polys(a: &[Vec<BaseField>; 2], b: &[Vec<BaseField>; 2]) -> [Vec<BaseField>; 2] {
     [add_polys(&a[0], &b[0]), add_polys(&a[1], &b[1])]
+}
+
+fn add_circ_polys2<F: Field>(a: &[Vec<F>; 2], b: &[Vec<F>; 2]) -> [Vec<F>; 2] {
+    [add_polys2(&a[0], &b[0]), add_polys2(&a[1], &b[1])]
 }
 
 fn sub_circ_polys(a: &[Vec<BaseField>; 2], b: &[Vec<BaseField>; 2]) -> [Vec<BaseField>; 2] {
     [sub_polys(&a[0], &b[0]), sub_polys(&a[1], &b[1])]
 }
 
+fn sub_circ_polys2<F: Field>(a: &[Vec<F>; 2], b: &[Vec<F>; 2]) -> [Vec<F>; 2] {
+    [sub_polys2(&a[0], &b[0]), sub_polys2(&a[1], &b[1])]
+}
+
 fn mul_circ_by_const(a: &[Vec<BaseField>; 2], c: &BaseField) -> [Vec<BaseField>; 2] {
     [mul_poly_by_const(&a[0], &c), mul_poly_by_const(&a[1], &c)]
 }
 
+fn mul_circ_by_const2<F: Field>(a: &[Vec<F>; 2], c: &F) -> [Vec<F>; 2] {
+    [mul_poly_by_const2(&a[0], &c), mul_poly_by_const2(&a[1], &c)]
+}
+
 fn mul_polys(a: &Vec<BaseField>, b: &Vec<BaseField>) -> Vec<BaseField> {
     let mut o = vec![M31(0); a.len() + b.len() - 1];
+    for i in 0..a.len() {
+        for j in 0..b.len() {
+            o[i + j] += a[i] * b[j];
+        }
+    }
+
+    o
+}
+
+fn mul_polys2<F: Field>(a: &Vec<F>, b: &Vec<F>) -> Vec<F> {
+    let mut o = vec![F::zero(); a.len() + b.len() - 1];
     for i in 0..a.len() {
         for j in 0..b.len() {
             o[i + j] += a[i] * b[j];
@@ -354,6 +456,19 @@ fn add_polys(a: &Vec<BaseField>, b: &Vec<BaseField>) -> Vec<BaseField> {
     res
 }
 
+fn add_polys2<F: Field>(a: &Vec<F>, b: &Vec<F>) -> Vec<F> {
+    let max_iter = max([a.len(), b.len()]).unwrap();
+    let mut res = vec![];
+
+    for i in 0..max_iter {
+        let a_i = if i < a.len() { a[i] } else { F::zero() };
+        let b_i = if i < b.len() { b[i] } else { F::zero() };
+        res.push(a_i + b_i);
+    }
+
+    res
+}
+
 fn sub_polys(a: &Vec<BaseField>, b: &Vec<BaseField>) -> Vec<BaseField> {
     let max_iter = max([a.len(), b.len()]).unwrap();
     let mut res = vec![];
@@ -367,8 +482,25 @@ fn sub_polys(a: &Vec<BaseField>, b: &Vec<BaseField>) -> Vec<BaseField> {
     res
 }
 
+fn sub_polys2<F: Field>(a: &Vec<F>, b: &Vec<F>) -> Vec<F> {
+    let max_iter = max([a.len(), b.len()]).unwrap();
+    let mut res = vec![];
+
+    for i in 0..max_iter {
+        let a_i = if i < a.len() { a[i] } else { F::zero() };
+        let b_i = if i < b.len() { b[i] } else { F::zero() };
+        res.push(a_i - b_i);
+    }
+
+    res
+}
+
 // mul_by_const
 fn mul_poly_by_const(poly: &Vec<BaseField>, constant: &BaseField) -> Vec<BaseField> {
+    poly.iter().map(|coeff| *coeff * *constant).collect()
+}
+// mul_by_const
+fn mul_poly_by_const2<F: Field>(poly: &Vec<F>, constant: &F) -> Vec<F> {
     poly.iter().map(|coeff| *coeff * *constant).collect()
 }
 
@@ -402,19 +534,38 @@ where
     let pts = n_pts;
     let vals = n_vals;
 
-    // let mut ans = [vec![], vec![]];
-    // for i in 0..pts.len() {
-    //     let pts_removed = pts[..i]
-    //         .iter()
-    //         .chain(pts[i + 1..].iter())
-    //         .cloned()
-    //         .collect();
-    //     let pol = circ_zpoly::<P>(&pts_removed, Some(pts[i]));
-    //     let scale = vals[i] / eval_circ_poly_at(&pol, &pts[i]);
-    //     ans = add_circ_polys(&ans, &mul_circ_by_const(&pol, &scale));
-    // }
+    let mut ans = [vec![], vec![]];
+    for i in 0..pts.len() {
+        let pts_removed = pts[..i]
+            .iter()
+            .chain(pts[i + 1..].iter())
+            .cloned()
+            .collect();
+        let pol = circ_zpoly2(&pts_removed, Some(pts[i]));
+        let scale = vals[i] / eval_circ_poly_at2(&pol, &pts[i]);
+        ans = add_circ_polys2(&ans, &mul_circ_by_const2(&pol, &scale));
+    }
 
-    Ok([vec![], vec![]])
+    if normalize && pts.len() % 2 == 0 {
+        let d = pts.len() / 2;
+        let zpol = circ_zpoly2(&pts, None);
+        let coef_a = if ans[1].len() >= d {
+            ans[1][d - 1]
+        } else {
+            F::zero()
+        };
+        let scale = coef_a / zpol[1][d - 1];
+        ans = sub_circ_polys2(&ans, &mul_circ_by_const2(&zpol, &scale));
+    }
+
+    for i in 0..pts.len() {
+        let eval = eval_circ_poly_at2(&ans, &pts[i]);
+        if eval != vals[i] {
+            return Err("Cannot interoplate".to_owned());
+        }
+    }
+
+    Ok(ans)
 }
 
 // TODO: to refactor to support for both BaseField and SecureField
