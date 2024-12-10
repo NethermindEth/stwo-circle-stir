@@ -231,17 +231,28 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
         merkle_tree = m2;
 
         let pol = circ_lagrange_interp2(&rs, &g_rs, false).unwrap();
-        let pol_vals: Vec<SecureField> = xs
+        let pol_vals: Vec<BaseField> = xs
             .iter()
-            .map(|x| eval_circ_poly_at2(&pol, &x.to_secure_field_point()))
+            .map(|x| eval_circ_poly_at2(&pol, &x.to_point()))
             .collect();
-        let zpol = circ_zpoly2(&rs, None);
+        let zpol = circ_zpoly2(&rs, None); // TODO: use `split_exts` to convert zpol to M31
 
         for j in 0..2 * eval_sizes[i] {
-            let xxxx = merkle_tree_val.at(j)
+            let xxxx = merkle_tree_val.at(j) // xxxx should be M31
                 - pol_vals[j] / eval_circ_poly_at2(&zpol, &xs[j].to_secure_field_point());
 
-            let yyyy = geom_sum((xs[j].to_point() * r_comb).x, rs.len());
+            let yyyy = geom_sum((xs[j].to_point() + r_comb).x, rs.len()); // yyyy is M31
+
+            let zzz = merkle_tree_val.at(j);
+            let aaa = pol_vals[j];
+            let ccc = eval_circ_poly_at2(&zpol, &xs[j].to_secure_field_point());
+
+            let bbb = zzz - aaa;
+
+            // let vals should be M31 as well
+
+            // xs[j] - CirclePointIndex -> CirclePoint<M31>
+            // r_comb - CirclePoint<M31>
         }
         // vals = [f.mul(f.div(g_hat_shift[j] - pol_vals[j],f.eval_circ_poly_at(zpol,xs[j])),
         // f.geom_sum((xs[j]*r_comb).x,len(rs))) for j in range(2*self.eval_sizes[i])]
@@ -508,9 +519,9 @@ fn circ_lagrange_interp2<F>(
     pts: &Vec<CirclePoint<F>>,
     vals: &Vec<F>,
     normalize: bool,
-) -> Result<[Vec<F>; 2], String>
+) -> Result<[Vec<BaseField>; 2], String>
 where
-    F: Field + AllConjugate,
+    F: Field + AllConjugate + ToBaseField,
     CirclePoint<F>: AllConjugate,
 {
     if pts.len() != vals.len() {
@@ -565,7 +576,35 @@ where
         }
     }
 
-    Ok(ans)
+    circ_poly_to_int_poly(&ans)
+}
+
+fn circ_poly_to_int_poly<F>(p: &[Vec<F>; 2]) -> Result<[Vec<BaseField>; 2], String>
+where
+    F: Field + ToBaseField,
+{
+    let mut p0 = vec![];
+    let mut p1 = vec![];
+
+    for f in &p[0] {
+        let m = f.to_basefield();
+        if m.is_err() {
+            return Err(m.unwrap_err());
+        }
+
+        p0.push(m.unwrap());
+    }
+
+    for f in &p[1] {
+        let m = f.to_basefield();
+        if m.is_err() {
+            return Err(m.unwrap_err());
+        }
+
+        p1.push(m.unwrap());
+    }
+
+    Ok([p0, p1])
 }
 
 // TODO: to refactor to support for both BaseField and SecureField
@@ -627,6 +666,41 @@ fn circ_lagrange_interp(
     }
 
     Ok(ans)
+}
+
+trait ToBaseField {
+    fn to_basefield(&self) -> Result<BaseField, String>;
+}
+
+impl ToBaseField for M31 {
+    fn to_basefield(&self) -> Result<BaseField, String> {
+        Ok(*self)
+    }
+}
+
+impl ToBaseField for CM31 {
+    fn to_basefield(&self) -> Result<BaseField, String> {
+        let m31_array = [self.0, self.1];
+        if m31_array[1] != BaseField::zero() {
+            return Err("m31_array[1] != 0".to_owned());
+        }
+
+        Ok(m31_array[0])
+    }
+}
+
+impl ToBaseField for QM31 {
+    fn to_basefield(&self) -> Result<BaseField, String> {
+        let m31_array = self.to_m31_array();
+        if m31_array[1] != BaseField::zero()
+            || m31_array[2] != BaseField::zero()
+            || m31_array[3] != BaseField::zero()
+        {
+            return Err("m31_array[1,2,3] != 0".to_owned());
+        }
+
+        Ok(m31_array[0])
+    }
 }
 
 trait Conj {
