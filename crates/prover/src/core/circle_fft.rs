@@ -235,27 +235,39 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
             .iter()
             .map(|x| eval_circ_poly_at2(&pol, &x.to_point()))
             .collect();
-        let zpol = circ_zpoly2(&rs, None); // TODO: use `split_exts` to convert zpol to M31
+        let zpol = circ_zpoly2(&rs, None, true); // TODO: use `split_exts` to convert zpol to M31
+        let zpol = circ_poly_to_int_poly(&zpol).unwrap();
 
+        let mut vals = vec![];
         for j in 0..2 * eval_sizes[i] {
-            let xxxx = merkle_tree_val.at(j) // xxxx should be M31
-                - pol_vals[j] / eval_circ_poly_at2(&zpol, &xs[j].to_secure_field_point());
-
-            let yyyy = geom_sum((xs[j].to_point() + r_comb).x, rs.len()); // yyyy is M31
-
-            let zzz = merkle_tree_val.at(j);
+            let zzz: M31 = merkle_tree_val.at(j);
             let aaa = pol_vals[j];
-            let ccc = eval_circ_poly_at2(&zpol, &xs[j].to_secure_field_point());
+            let denom = eval_circ_poly_at2(&zpol, &xs[j].to_point());
+            let a = (zzz - aaa) / denom;
 
-            let bbb = zzz - aaa;
-
-            // let vals should be M31 as well
-
-            // xs[j] - CirclePointIndex -> CirclePoint<M31>
-            // r_comb - CirclePoint<M31>
+            let geom_sum_res = geom_sum((xs[j].to_point() + r_comb).x, rs.len()); // yyyy is M31
+            let val = a * geom_sum_res;
+            vals.push(val);
         }
-        // vals = [f.mul(f.div(g_hat_shift[j] - pol_vals[j],f.eval_circ_poly_at(zpol,xs[j])),
-        // f.geom_sum((xs[j]*r_comb).x,len(rs))) for j in range(2*self.eval_sizes[i])]
+
+        let domain = CircleDomain::new(
+            coset.repeated_double(folding_params[folding_params.len() - 1] as u32),
+        );
+
+        let g_hat_evaluate = CircleEvaluation::<B, BaseField, BitReversedOrder>::new(
+            domain,
+            g_hat.iter().map(|x| *x).collect(),
+        );
+        let g_pol = g_hat_evaluate.interpolate();
+
+        let numer = values.len(); // maxdeg_plus_1
+        let denom: usize = folding_params.iter().product();
+        let final_deg = numer / denom;
+
+
+        // if not is_fake:
+        //     assert set(g_pol[2*final_deg+1:]) == set([0])
+        // output += b''.join([c.to_bytes(32,"big") for c in g_pol[:2*final_deg+1]])
     }
 
     Ok(())
@@ -272,13 +284,6 @@ fn geom_sum<F: Field>(x: F, p: usize) -> F {
 
     ans
 }
-// def geom_sum(self, x, p):
-//         ans = 1
-//         prod = 1
-//         for _ in range(p):
-//             prod = self.mul(prod,x)
-//             ans = self.add(ans,prod)
-//         return ans
 
 fn circ_zpoly<const MOD: u32>(
     pts: &Vec<CirclePoint<BaseField>>,
@@ -301,7 +306,27 @@ fn circ_zpoly<const MOD: u32>(
     ans
 }
 
-fn circ_zpoly2<F: Field>(pts: &Vec<CirclePoint<F>>, nzero: Option<CirclePoint<F>>) -> [Vec<F>; 2] {
+fn circ_zpoly2<F>(
+    pts: &Vec<CirclePoint<F>>,
+    nzero: Option<CirclePoint<F>>,
+    split_exts: bool,
+) -> [Vec<F>; 2]
+where
+    F: Field + ToBaseField,
+    CirclePoint<F>: AllConjugate,
+{
+    let mut pts = pts.clone();
+    if split_exts {
+        let mut pts2 = vec![];
+
+        for p in pts {
+            let mut all_conjs = p.all_conj();
+            pts2.append(&mut all_conjs);
+        }
+
+        pts = pts2;
+    }
+
     let mut ans = [vec![F::one()], vec![F::zero()]];
     for i in 0..(pts.len() / 2) {
         ans = mul_circ_polys2(&ans, &line2(pts[2 * i], pts[2 * i + 1]));
@@ -552,14 +577,14 @@ where
             .chain(pts[i + 1..].iter())
             .cloned()
             .collect();
-        let pol = circ_zpoly2(&pts_removed, Some(pts[i]));
+        let pol = circ_zpoly2(&pts_removed, Some(pts[i]), false);
         let scale = vals[i] / eval_circ_poly_at2(&pol, &pts[i]);
         ans = add_circ_polys2(&ans, &mul_circ_by_const2(&pol, &scale));
     }
 
     if normalize && pts.len() % 2 == 0 {
         let d = pts.len() / 2;
-        let zpol = circ_zpoly2(&pts, None);
+        let zpol = circ_zpoly2(&pts, None, false);
         let coef_a = if ans[1].len() >= d {
             ans[1][d - 1]
         } else {
@@ -814,18 +839,6 @@ mod tests {
         let xs = coset.get_mul_cycle(CirclePointIndex(1));
         println!("{:?}", xs);
     }
-
-    // def all_conj(p):
-    //     if isinstance(p,Gaussian):
-    //         if isinstance(p.x,int):
-    //             return [p]
-    //         else:
-    //             return [Gaussian(x,y) for x,y in zip(p.x.all_conj(),p.y.all_conj())]
-    //     else:
-    //         if isinstance(p,int):
-    //             return [p]
-    //         else:
-    //             return p.all_conj()
 
     #[test]
     fn test_base_field_all_conj() {
