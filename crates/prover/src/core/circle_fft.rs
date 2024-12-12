@@ -269,8 +269,14 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
     let denom: usize = folding_params.iter().product();
     let final_deg = numer / denom;
 
-    // if not is_fake: 'we can ignore is_fake and always have the assertion logic
-    //     assert set(g_pol[2*final_deg+1:]) == set([0])
+    let g_pol_coeffs: Vec<BaseField> = g_pol.coeffs.to_cpu();
+    let (_, g_pol_final) = g_pol_coeffs.split_at(2 * final_deg + 1);
+
+    let is_zero = g_pol_final.iter().all(|x| *x == BaseField::zero());
+    if is_zero {
+        return Err("g_pol_final is zero. something is not right".to_string());
+    }
+
     // output += b''.join([c.to_bytes(32,"big") for c in g_pol[:2*final_deg+1]])
 
     Ok(())
