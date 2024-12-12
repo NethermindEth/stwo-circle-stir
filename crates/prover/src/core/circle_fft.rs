@@ -251,12 +251,13 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
         }
     }
 
-    // g_pol = fft(g_hat, self.modulus, f.exp(rt,self.folding_params[-1]),
-    // f.exp(self.eval_offsets[-1],self.folding_params[-1])) final_deg =
-    // self.maxdeg_plus_1//math.prod(self.folding_params)
-
-    let domain = // toDo: include the offset 'f.exp(self.eval_offsets[-1],self.folding_params[-1])'
-        CircleDomain::new(coset.repeated_double(folding_params[folding_params.len() - 1] as u32));
+    let final_folding_param = folding_params[folding_params.len() - 1];
+    let to_shift = eval_offsets[eval_offsets.len() - 1] * final_folding_param;
+    let domain = CircleDomain::new(
+        coset
+            .repeated_double(final_folding_param as u32)
+            .shift(to_shift),
+    );
 
     let g_hat_evaluate = CircleEvaluation::<B, BaseField, BitReversedOrder>::new(
         domain,
