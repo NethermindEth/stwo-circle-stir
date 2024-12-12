@@ -2,6 +2,7 @@
 #![allow(unused_assignments)]
 
 use std::collections::BTreeMap;
+use std::vec;
 
 use itertools::max;
 use num_traits::{One, Zero};
@@ -59,13 +60,15 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
     let mut r_fold = M31_CIRCLE_GEN.mul(rnd.0 .0 .0.into());
     let mut g_hat = vec![];
 
+    let mut folded_len = 0;
+
     for i in 1..folding_params.len() + 1 {
         // # fold using r-fold
         if eval_sizes[i - 1] % folding_params[i - 1] != 0 {
             return Err("eval_sizes[i-1] % folding_params[i-1] != 0".to_owned());
         }
 
-        let folded_len = eval_sizes[i - 1] / folding_params[i - 1];
+        folded_len = eval_sizes[i - 1] / folding_params[i - 1];
         let mut coset2 = coset.repeated_double(folded_len.ilog2());
 
         let mut xs2s: [Vec<CirclePointIndex>; 2] = [vec![], vec![]];
@@ -277,7 +280,47 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
         return Err("g_pol_final is zero. something is not right".to_string());
     }
 
-    // output += b''.join([c.to_bytes(32,"big") for c in g_pol[:2*final_deg+1]])
+    let g_pol_final_secure: Vec<QM31> = g_pol_final
+        .iter()
+        .map(|g| SecureField::from_m31(*g, BaseField::zero(), BaseField::zero(), BaseField::zero()))
+        .collect();
+
+    channel.mix_felts(&g_pol_final_secure);
+
+    let mut t_shifts = vec![];
+    let mut t_conj = vec![];
+    for _ in 0..repetition_params[repetition_params.len() - 1] {
+        let t_val_bytes = channel.draw_random_bytes();
+
+        let t_val_bytes = [
+            t_val_bytes[0],
+            t_val_bytes[1],
+            t_val_bytes[2],
+            t_val_bytes[3],
+        ];
+
+        let t_val = u32::from_be_bytes(t_val_bytes) % ((2 * folded_len) as u32);
+
+        t_shifts.push(t_val / 2);
+        t_conj.push(t_val % 2);
+
+        channel.mix_u64(t_val as u64);
+    }
+
+    let i = folding_params.len();
+    let mut queried_index = vec![];
+    for j in 0..folding_params[folding_params.len() - 1] {
+        for (t, k) in t_shifts.iter().zip(t_conj.iter()) {
+            let index = (*t as usize) + (j * folded_len) + ((*k as usize) * eval_sizes[i - 1]);
+            queried_index.push(index);
+        }
+    }
+
+    let mut queries = BTreeMap::<u32, Vec<usize>>::new();
+    queries.insert(merkle_tree_val_log_size, queried_index);
+
+    let (_values, decommitment) = merkle_tree.decommit(queries.clone(), vec![&merkle_tree_val]);
+    output_branches.push(decommitment);
 
     Ok(())
 }
