@@ -57,6 +57,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
     // CirclePoint mul by M31 value
     let rnd = channel.draw_felt();
     let mut r_fold = M31_CIRCLE_GEN.mul(rnd.0 .0 .0.into());
+    let mut g_hat = vec![];
 
     for i in 1..folding_params.len() + 1 {
         // # fold using r-fold
@@ -91,7 +92,6 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
             }
         }
 
-        let mut g_hat = vec![];
         for l in 0..=1 {
             for k in 0..folded_len {
                 let polys = &x_polys[k + folded_len * l];
@@ -249,26 +249,28 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
             let val = a * geom_sum_res;
             vals.push(val);
         }
-
-        let domain = CircleDomain::new(
-            coset.repeated_double(folding_params[folding_params.len() - 1] as u32),
-        );
-
-        let g_hat_evaluate = CircleEvaluation::<B, BaseField, BitReversedOrder>::new(
-            domain,
-            g_hat.iter().map(|x| *x).collect(),
-        );
-        let g_pol = g_hat_evaluate.interpolate();
-
-        let numer = values.len(); // maxdeg_plus_1
-        let denom: usize = folding_params.iter().product();
-        let final_deg = numer / denom;
-
-
-        // if not is_fake:
-        //     assert set(g_pol[2*final_deg+1:]) == set([0])
-        // output += b''.join([c.to_bytes(32,"big") for c in g_pol[:2*final_deg+1]])
     }
+
+    // g_pol = fft(g_hat, self.modulus, f.exp(rt,self.folding_params[-1]),
+    // f.exp(self.eval_offsets[-1],self.folding_params[-1])) final_deg =
+    // self.maxdeg_plus_1//math.prod(self.folding_params)
+
+    let domain = // toDo: include the offset 'f.exp(self.eval_offsets[-1],self.folding_params[-1])'
+        CircleDomain::new(coset.repeated_double(folding_params[folding_params.len() - 1] as u32));
+
+    let g_hat_evaluate = CircleEvaluation::<B, BaseField, BitReversedOrder>::new(
+        domain,
+        g_hat.iter().map(|x| *x).collect(),
+    );
+    let g_pol = g_hat_evaluate.interpolate();
+
+    let numer = values.len(); // maxdeg_plus_1
+    let denom: usize = folding_params.iter().product();
+    let final_deg = numer / denom;
+
+    // if not is_fake: 'we can ignore is_fake and always have the assertion logic
+    //     assert set(g_pol[2*final_deg+1:]) == set([0])
+    // output += b''.join([c.to_bytes(32,"big") for c in g_pol[:2*final_deg+1]])
 
     Ok(())
 }
