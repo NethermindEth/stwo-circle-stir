@@ -362,7 +362,7 @@ where
         pts = pts2;
     }
 
-    let mut ans = [vec![F::one()], vec![F::zero()]];
+    let mut ans: [Vec<F>; 2] = [vec![F::one()], vec![]];
     for i in 0..(pts.len() / 2) {
         ans = mul_circ_polys(&ans, &line(pts[2 * i], pts[2 * i + 1]));
     }
@@ -699,20 +699,21 @@ impl CirclePoint<BaseField> {
 
 #[cfg(test)]
 mod tests {
-    use super::AllConjugate;
+    use super::{line, AllConjugate};
     use crate::core::circle::CirclePointIndex;
+    use crate::core::circle_fft::{
+        add_circ_polys, add_polys, circ_zpoly, eval_circ_poly_at, eval_poly_at, mul_circ_by_const, mul_circ_polys, mul_polys, sub_circ_polys, sub_polys
+    };
     use crate::core::fields::cm31::CM31;
-    use crate::core::fields::m31::BaseField;
+    use crate::core::fields::m31::{BaseField, M31};
     use crate::core::pcs::PcsConfig;
     use crate::core::poly::circle::CanonicCoset;
 
     #[test]
     fn test_get_mul_cycle() {
-        const LOG_N_INSTANCES: u32 = 6;
+        let log_size = 8;
         let config = PcsConfig::default();
-        let coset = CanonicCoset::new(LOG_N_INSTANCES + 1 + config.fri_config.log_blowup_factor)
-            .circle_domain()
-            .half_coset;
+        let coset = CanonicCoset::new(log_size).circle_domain().half_coset;
 
         let xs = coset.get_mul_cycle(CirclePointIndex(1));
         println!("{:?}", xs);
@@ -768,4 +769,132 @@ mod tests {
     // circlepoint(basefield)
     // circlepoint(cm31)
     // circlepoint(qm31)
+
+    #[test]
+    fn test_line() {
+        let pt1 = CirclePointIndex(1).to_point();
+        let pt2 = CirclePointIndex(2).to_point();
+
+        let line_res = line(pt1, pt2);
+        assert_eq!(
+            line_res,
+            [
+                vec![M31(1464384553), M31(2049297282)],
+                vec![M31(2147483646)]
+            ]
+        );
+        println!("{:?}", line_res);
+    }
+
+    #[test]
+    fn test_mul_polys() {
+        let a = vec![M31(5), M31(6)];
+        let b = vec![M31(7), M31(8)];
+
+        let res = mul_polys(&a, &b);
+        assert_eq!(res, vec![M31(35), M31(82), M31(48)]);
+    }
+
+    #[test]
+    fn test_add_polys() {
+        let a = vec![M31(5), M31(6)];
+        let b = vec![M31(7), M31(8)];
+
+        let res = add_polys(&a, &b);
+        assert_eq!(res, vec![M31(12), M31(14)]);
+    }
+
+    #[test]
+    fn test_sub_polys() {
+        let a = vec![M31(5), M31(6)];
+        let b = vec![M31(7), M31(8)];
+
+        let res = sub_polys(&a, &b);
+        assert_eq!(res, vec![M31(2147483645), M31(2147483645)]);
+    }
+
+    #[test]
+    fn test_mul_circ_polys() {
+        let a = [vec![M31(5), M31(6)], vec![M31(7), M31(8)]];
+        let b = [vec![M31(7), M31(8)], vec![M31(9), M31(10)]];
+
+        let res = mul_circ_polys(&a, &b);
+        assert_eq!(
+            res,
+            [
+                vec![M31(98), M31(224), M31(65), M31(2147483505), M31(2147483567)],
+                vec![M31(94), M31(216), M31(124)]
+            ]
+        );
+    }
+
+    #[test]
+    fn test_add_circ_polys() {
+        let a = [vec![M31(5), M31(6)], vec![M31(7), M31(8)]];
+        let b = [vec![M31(7), M31(8)], vec![M31(9), M31(10)]];
+
+        let res = add_circ_polys(&a, &b);
+
+        // [[12, 14], [16, 18]]
+        assert_eq!(res, [vec![M31(12), M31(14)], vec![M31(16), M31(18)]]);
+    }
+
+    #[test]
+    fn test_sub_circ_polys() {
+        let a = [vec![M31(5), M31(6)], vec![M31(7), M31(8)]];
+        let b = [vec![M31(7), M31(8)], vec![M31(9), M31(10)]];
+
+        let res = sub_circ_polys(&a, &b);
+        assert_eq!(
+            res,
+            [
+                vec![M31(2147483645), M31(2147483645)],
+                vec![M31(2147483645), M31(2147483645)]
+            ]
+        );
+    }
+
+    #[test]
+    fn test_mul_circ_by_const() {
+        let a = [vec![M31(5), M31(6)], vec![M31(7), M31(8)]];
+        let b = M31(7);
+
+        let res = mul_circ_by_const(&a, &b);
+        assert_eq!(res, [vec![M31(35), M31(42)], vec![M31(49), M31(56)]]);
+    }
+
+    #[test]
+    fn test_circ_zpoly() {
+        let a = vec![
+            CirclePointIndex(1).to_point(),
+            CirclePointIndex(2).to_point(),
+            CirclePointIndex(3).to_point(),
+        ];
+        let res = circ_zpoly(&a, None, false);
+        assert_eq!(
+            res,
+            [
+                vec![M31(1566776379), M31(277737251), M31(98186365)],
+                vec![M31(2147483621), M31(1)]
+            ]
+        );
+    }
+
+    #[test]
+    fn test_eval_poly_at() {
+        let poly = vec![M31(1), M31(2), M31(3)];
+        let pt = M31(2);
+        let res = eval_poly_at(&poly, &pt);
+        assert_eq!(res, M31(17));
+    }
+
+    #[test]
+    fn test_eval_circ_poly_at() {
+        let poly = [vec![M31(1), M31(2), M31(3)], vec![M31(4), M31(5), M31(6)]];
+        let pt = CirclePointIndex(1).to_point();
+        let res = eval_circ_poly_at(&poly, &pt);
+        assert_eq!(res, M31(939809057));
+    }
+
+    // circ_poly_to_int_poly
 }
