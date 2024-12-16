@@ -94,7 +94,6 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
                 )
                 .unwrap();
 
-                // let inpl = circ_lagrange_interp(&xs2s[l], &interp_vals, true).unwrap();
                 x_polys.push(inpl);
             }
         }
@@ -677,17 +676,6 @@ impl AllConjugate for CirclePoint<QM31> {
     }
 }
 
-// impl Mul<CirclePoint<BaseField>> for CirclePoint<BaseField> {
-//     type Output = Self;
-
-//     fn mul(self, rhs: CirclePoint<BaseField>) -> Self::Output {
-//         Self::Output {
-//             x: self.x * rhs.x - self.y * rhs.y,
-//             y: self.x * rhs.y + self.y * rhs.x,
-//         }
-//     }
-// }
-
 impl CirclePoint<BaseField> {
     fn mul_circle_point(self, rhs: CirclePoint<BaseField>) -> Self {
         Self {
@@ -699,7 +687,7 @@ impl CirclePoint<BaseField> {
 
 #[cfg(test)]
 mod tests {
-    use super::{line, AllConjugate};
+    use super::{circ_lagrange_interp, line, AllConjugate};
     use crate::core::circle::{CirclePoint, CirclePointIndex};
     use crate::core::circle_fft::{
         add_circ_polys, add_polys, circ_zpoly, eval_circ_poly_at, eval_poly_at, mul_circ_by_const,
@@ -918,6 +906,22 @@ mod tests {
         let pt = CirclePointIndex(1).to_point();
         let res = eval_circ_poly_at(&poly, &pt);
         assert_eq!(res, M31(939809057));
+    }
+
+    #[test]
+    fn test_circ_lagrange_interp() {
+        let pts = vec![
+            CirclePointIndex(2),
+            CirclePointIndex(3),
+            CirclePointIndex(4),
+        ]
+        .iter()
+        .map(|x| x.to_point())
+        .collect();
+        println!("{:?}", pts);
+        let values = vec![M31(1), M31(2), M31(3)];
+        let res = circ_lagrange_interp(&pts, &values, false).unwrap();
+        assert_eq!(res, [vec![M31(2), M31(2147483632)], vec![M31(463810318)]]);
     }
 
     // circ_poly_to_int_poly
