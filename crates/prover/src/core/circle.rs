@@ -450,7 +450,7 @@ impl Coset {
             }
         }
 
-        os.reverse();
+        os.pop();
         os
     }
 }

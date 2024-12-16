@@ -72,7 +72,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
         let mut coset2 = coset.repeated_double(folded_len.ilog2());
 
         let mut xs2s: [Vec<CirclePointIndex>; 2] = [vec![], vec![]];
-        xs2s[0] = coset2.get_mul_cycle(CirclePointIndex(1));
+        xs2s[0] = coset2.get_mul_cycle(CirclePointIndex(0));
         xs2s[1] = (0..folding_params[i])
             .map(|j| xs2s[0][xs2s[0].len() - j - 1])
             .collect();
@@ -700,9 +700,10 @@ impl CirclePoint<BaseField> {
 #[cfg(test)]
 mod tests {
     use super::{line, AllConjugate};
-    use crate::core::circle::CirclePointIndex;
+    use crate::core::circle::{CirclePoint, CirclePointIndex};
     use crate::core::circle_fft::{
-        add_circ_polys, add_polys, circ_zpoly, eval_circ_poly_at, eval_poly_at, mul_circ_by_const, mul_circ_polys, mul_polys, sub_circ_polys, sub_polys
+        add_circ_polys, add_polys, circ_zpoly, eval_circ_poly_at, eval_poly_at, mul_circ_by_const,
+        mul_circ_polys, mul_polys, sub_circ_polys, sub_polys,
     };
     use crate::core::fields::cm31::CM31;
     use crate::core::fields::m31::{BaseField, M31};
@@ -711,12 +712,35 @@ mod tests {
 
     #[test]
     fn test_get_mul_cycle() {
-        let log_size = 8;
+        let log_size = 3;
         let config = PcsConfig::default();
         let coset = CanonicCoset::new(log_size).circle_domain().half_coset;
 
-        let xs = coset.get_mul_cycle(CirclePointIndex(1));
-        println!("{:?}", xs);
+        let xs = coset.get_mul_cycle(CirclePointIndex(0));
+        let xs_points: Vec<CirclePoint<M31>> = xs.iter().map(|x| x.to_point()).collect();
+
+        // [(1, 0), (0, 2147483646), (2147483646, 0), (0, 1)]
+        assert_eq!(
+            xs_points,
+            vec![
+                CirclePoint {
+                    x: M31(1),
+                    y: M31(0)
+                },
+                CirclePoint {
+                    x: M31(0),
+                    y: M31(2147483646)
+                },
+                CirclePoint {
+                    x: M31(2147483646),
+                    y: M31(0)
+                },
+                CirclePoint {
+                    x: M31(0),
+                    y: M31(1)
+                }
+            ]
+        );
     }
 
     #[test]
