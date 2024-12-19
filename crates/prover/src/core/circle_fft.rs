@@ -15,7 +15,7 @@ use super::fields::m31::{BaseField, M31, P};
 use super::fields::qm31::{SecureField, QM31};
 use super::fields::{Field, FieldExpOps};
 use super::poly::circle::{CircleDomain, CircleEvaluation};
-use super::poly::BitReversedOrder;
+use super::poly::NaturalOrder;
 use super::vcs::prover::MerkleProver;
 use crate::core::fields::ComplexConjugate;
 
@@ -63,6 +63,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
     let mut folded_len = 0;
 
     for i in 1..folding_params.len() + 1 {
+        g_hat = vec![];
         // # fold using r-fold
         if eval_sizes[i - 1] % folding_params[i - 1] != 0 {
             return Err("eval_sizes[i-1] % folding_params[i-1] != 0".to_owned());
@@ -98,8 +99,11 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
             }
         }
 
-        for l in 0..=1 {
-            for k in 0..folded_len {
+        // due to the different fft interleaving,
+        // the for our k, l iteration is different from
+        // our python implementation
+        for k in 0..folded_len {
+            for l in 0..=1 {
                 let polys = &x_polys[k + folded_len * l];
                 let point =
                     r_fold.mul_circle_point(xs[k + eval_sizes[i - 1] * l].to_point().conjugate());
@@ -131,14 +135,14 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
 
         let g_hat_domain =
             CircleDomain::new(coset.repeated_double(expand_factor.ilog2())).shift(p_offset);
-        let g_hat_evaluate = CircleEvaluation::<B, BaseField, BitReversedOrder>::new(
+        let g_hat_evaluate = CircleEvaluation::<B, BaseField, NaturalOrder>::new(
             g_hat_domain,
             g_hat.iter().map(|x| *x).collect(),
         );
 
-        let poly = g_hat_evaluate.clone().interpolate();
+        let poly = g_hat_evaluate.clone().bit_reverse().interpolate();
         let shifted_domain = CircleDomain::new(coset.shift(eval_offsets[i]));
-        let g_hat_shift = poly.evaluate(shifted_domain);
+        let g_hat_shift = poly.evaluate(shifted_domain).bit_reverse();
 
         let m2: MerkleProver<B, MC::H> = MerkleProver::commit(vec![&g_hat_shift.values]);
         output_roots.push(m2.root());
@@ -156,11 +160,11 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
             .collect();
 
         let inv_fft_domain = CircleDomain::new(coset2.shift(p_offset));
-        let g_hat_evaluate = CircleEvaluation::<B, BaseField, BitReversedOrder>::new(
+        let g_hat_evaluate = CircleEvaluation::<B, BaseField, NaturalOrder>::new(
             inv_fft_domain,
             g_hat.iter().map(|x| *x).collect(),
         );
-        let poly = g_hat_evaluate.clone().interpolate();
+        let poly = g_hat_evaluate.clone().bit_reverse().interpolate();
 
         // TODO: to check correctness of this betas result
         let mut betas: Vec<SecureField> = r_outs
@@ -265,11 +269,11 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
             .shift(to_shift),
     );
 
-    let g_hat_evaluate = CircleEvaluation::<B, BaseField, BitReversedOrder>::new(
+    let g_hat_evaluate = CircleEvaluation::<B, BaseField, NaturalOrder>::new(
         domain,
         g_hat.iter().map(|x| *x).collect(),
     );
-    let g_pol = g_hat_evaluate.interpolate();
+    let g_pol = g_hat_evaluate.bit_reverse().interpolate();
 
     let numer = values.len(); // maxdeg_plus_1
     let denom: usize = folding_params.iter().product();
@@ -688,6 +692,7 @@ impl CirclePoint<BaseField> {
 #[cfg(test)]
 mod tests {
     use super::{circ_lagrange_interp, line, AllConjugate};
+    use crate::core::backend::CpuBackend;
     use crate::core::circle::{CirclePoint, CirclePointIndex};
     use crate::core::circle_fft::{
         add_circ_polys, add_polys, circ_zpoly, eval_circ_poly_at, eval_poly_at, mul_circ_by_const,
@@ -696,7 +701,8 @@ mod tests {
     use crate::core::fields::cm31::CM31;
     use crate::core::fields::m31::{BaseField, M31};
     use crate::core::pcs::PcsConfig;
-    use crate::core::poly::circle::CanonicCoset;
+    use crate::core::poly::circle::{CanonicCoset, CircleDomain, CircleEvaluation};
+    use crate::core::poly::{BitReversedOrder, NaturalOrder};
 
     #[test]
     fn test_get_mul_cycle() {
@@ -922,6 +928,184 @@ mod tests {
         let values = vec![M31(1), M31(2), M31(3)];
         let res = circ_lagrange_interp(&pts, &values, false).unwrap();
         assert_eq!(res, [vec![M31(2), M31(2147483632)], vec![M31(463810318)]]);
+    }
+
+    #[test]
+    fn test_fft_ifft_with_offset() {
+        let poly_log_length = 4;
+        let offset: CirclePointIndex = CirclePointIndex(2);
+        let offset_point = offset.to_point();
+        println!("{:?}", offset_point);
+        let coset = CanonicCoset::new(poly_log_length).coset.shift(offset);
+        let domain = CircleDomain::new(coset);
+        let values: Vec<M31> = (0..1 << (poly_log_length + 1)).map(|x| M31(x)).collect();
+        let evaluations =
+            CircleEvaluation::<CpuBackend, BaseField, NaturalOrder>::new(domain, values.clone());
+        let poly = evaluations.bit_reverse().interpolate();
+        let coeffs = poly.clone().coeffs;
+        assert_eq!(
+            coeffs,
+            [
+                M31(1073741839),
+                M31(0),
+                M31(1498069892),
+                M31(0),
+                M31(269407359),
+                M31(0),
+                M31(2026037040),
+                M31(0),
+                M31(1915079382),
+                M31(0),
+                M31(34710855),
+                M31(0),
+                M31(958049463),
+                M31(0),
+                M31(2103180470),
+                M31(0),
+                M31(1218381196),
+                M31(0),
+                M31(1595441113),
+                M31(0),
+                M31(1167370379),
+                M31(0),
+                M31(1194789249),
+                M31(0),
+                M31(1348073476),
+                M31(0),
+                M31(1717137709),
+                M31(0),
+                M31(681422734),
+                M31(0),
+                M31(981687288),
+                M31(1164983970)
+            ]
+        );
+
+        let evals = poly.evaluate(domain).bit_reverse();
+        assert_eq!(evals.values, values);
+    }
+
+    /// to remove
+    #[test]
+    fn test_fft_loop() {
+        let poly_log_length = 4;
+        let offset: CirclePointIndex = CirclePointIndex(2);
+        let coset = CanonicCoset::new(poly_log_length).coset.shift(offset);
+        let domain = CircleDomain::new(coset);
+
+        let mut aaaa = vec![];
+        for i in 0..1 << (poly_log_length + 1) {
+            let mut values: Vec<M31> = (0..1 << (poly_log_length + 1)).map(|x| M31(0)).collect();
+            values[i] = M31(1);
+            let evaluations = CircleEvaluation::<CpuBackend, BaseField, NaturalOrder>::new(
+                domain,
+                values.clone(),
+            );
+            let eval_bit_reversed = evaluations.bit_reverse();
+
+            let res = eval_bit_reversed.interpolate();
+            // let sum = res
+            //     .coeffs
+            //     .iter()
+            //     .enumerate()
+            //     .fold(M31(0), |acc, (i, x)| acc + (*x * (M31(i as u32 + 1))));
+            let mut sum = M31(0);
+            for j in 0..res.coeffs.len() {
+                // sum when j= 4, {0:1149060475}
+                let xxx = res.coeffs[j];
+                sum = sum + (xxx * M31(j as u32 + 1));
+            }
+
+            println!("sum_{:?}: {:?}", i, sum.0);
+            aaaa.push(sum.0);
+
+            // println!("res: {:?}", res);
+        }
+
+        println!("aaaa: {:?}", aaaa);
+    }
+
+    /// to remove
+    #[test]
+    fn test_fft_with_offset2() {
+        let poly_log_length = 4;
+        let offset: CirclePointIndex = CirclePointIndex(2);
+        let coset = CanonicCoset::new(poly_log_length).coset.shift(offset);
+        let domain = CircleDomain::new(coset);
+        let mut values: Vec<M31> = (0..1 << (poly_log_length + 1)).map(|x| M31(0)).collect();
+        values[1] = M31(1); // -> values [16]
+        let evaluations = CircleEvaluation::<CpuBackend, BaseField, BitReversedOrder>::new(
+            domain,
+            values.clone(),
+        );
+        let res = evaluations.interpolate();
+        println!("values: {:?}\n", values);
+
+        println!("res: {:?}", res);
+
+        let sum = res
+            .coeffs
+            .iter()
+            .enumerate()
+            .fold(M31(0), |acc, (i, x)| acc + (*x * (M31(i as u32 + 1))));
+        println!("sum: {:?}", sum);
+
+        let mut sum = M31(0);
+        for (i, x) in res.coeffs.iter().enumerate() {
+            sum = sum + (*x * M31(i as u32 + 1));
+        }
+        println!("sum: {:?}", sum);
+
+        // 664299329
+        // 63104004
+        //         sum=0;
+        // for(int i = 0; i < res.size(); i++) {
+        // sum +=(i+1)*res[i];
+        // }
+        // [1073741839, 0, 848656137, 0, 538814718, 0, 1904590433, 0, 1682675117, 0, 69421710, 0,
+        // 1916098926, 0, 2058877293, 0, 289278745, 0, 1043398579, 0, 187257111, 0, 242094851, 0,
+        // 548663305, 0, 1286791771, 0, 1362845468, 0, 1963374576, 341246954]
+    }
+
+    /// to remove
+    #[test]
+    fn test_fft_with_offset_example() {
+        let poly_log_length = 4;
+        let offset: CirclePointIndex = CirclePointIndex(2);
+        let coset = CanonicCoset::new(poly_log_length).coset.shift(offset);
+        //    .circle_domain()
+        //     .half_coset;
+        let rt = coset.step;
+        println!("{:?}", rt);
+        println!("coset.size(): {:?}", coset.size());
+        let values_of_cosets: Vec<CirclePoint<BaseField>> = coset.iter().collect();
+        println!("values_of_cosets: {:?}", values_of_cosets);
+
+        let offset_point = offset.to_point();
+        println!("{:?}", offset_point);
+        // let domain = CircleDomain::new(coset).shift(offset);
+        let domain = CircleDomain::new(coset);
+
+        // a1 b1 a2 b2
+        // -> a1 a2 b1 b2
+
+        // [1,2,3,4] rust
+        // [1,3,2,4] python
+        let mut values: Vec<M31> = (0..1 << (poly_log_length + 1)).map(|x| M31(0)).collect();
+        values[1] = M31(1); // -> values [16]
+        let evaluations =
+            CircleEvaluation::<CpuBackend, BaseField, BitReversedOrder>::new(domain, values);
+
+        let poly = evaluations.clone().interpolate();
+        let eval = poly.eval_at_point(CirclePointIndex(2).to_secure_field_point());
+
+        println!("poly: {:?}", poly);
+        // [67108864, 1292253447, 181339176, 1625457570, 1726293217, 895384967, 538115667,
+        // 1821208102, 604045020, 1930014043, 1647452692, 277488825, 243651426, 408548010,
+        // 902829831, 1805613252, 460722087, 1692334092, 1635132500, 502277012, 766471223,
+        // 1434355135, 1842054946, 279000510, 382866192, 1125260653, 529632953, 1122376117,
+        // 522736966, 794181501, 1002355404, 1363505214]
+        println!("eval: {:?}", eval);
     }
 
     // circ_poly_to_int_poly
