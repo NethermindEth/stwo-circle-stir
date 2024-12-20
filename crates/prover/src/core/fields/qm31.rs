@@ -32,6 +32,10 @@ impl QM31 {
         )
     }
 
+    pub fn from_single_m31(a: M31) -> Self {
+        QM31::from_m31(a, M31::zero(), M31::zero(), M31::zero())
+    }
+
     pub fn from_m31(a: M31, b: M31, c: M31, d: M31) -> Self {
         Self(CM31::from_m31(a, b), CM31::from_m31(c, d))
     }

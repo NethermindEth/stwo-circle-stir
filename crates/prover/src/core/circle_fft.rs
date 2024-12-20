@@ -7,17 +7,240 @@ use std::vec;
 use itertools::max;
 use num_traits::Zero;
 
-use super::backend::{BackendForChannel, Column};
+use super::backend::{BackendForChannel, Column, ColumnOps};
 use super::channel::{Channel, MerkleChannel};
 use super::circle::{CirclePoint, CirclePointIndex, Coset, M31_CIRCLE_GEN};
 use super::fields::cm31::CM31;
 use super::fields::m31::{BaseField, M31, P};
 use super::fields::qm31::{SecureField, QM31};
 use super::fields::{Field, FieldExpOps};
-use super::poly::circle::{CircleDomain, CircleEvaluation};
+use super::poly::circle::{CircleDomain, CircleEvaluation, CirclePoly};
 use super::poly::NaturalOrder;
-use super::vcs::prover::MerkleProver;
+use super::vcs::prover::{MerkleDecommitment, MerkleProver};
 use crate::core::fields::ComplexConjugate;
+
+fn calculate_xs2s(coset: Coset, folding_param: usize) -> [Vec<CirclePointIndex>; 2] {
+    let mut xs2s: [Vec<CirclePointIndex>; 2] = [vec![], vec![]];
+    xs2s[0] = coset.get_mul_cycle(CirclePointIndex(0));
+    xs2s[1] = (0..folding_param)
+        .map(|j| xs2s[0][xs2s[0].len() - j - 1])
+        .collect();
+
+    xs2s
+}
+
+fn calculate_xs(coset: &Coset, eval_offset: CirclePointIndex) -> Vec<CirclePointIndex> {
+    let mut xs = coset.get_mul_cycle(eval_offset);
+    let mut xs_conj: Vec<CirclePointIndex> = xs.iter().map(|x| x.conj()).collect();
+    xs.append(&mut xs_conj);
+
+    xs
+}
+
+fn calculate_g_hat(
+    folded_len: usize,
+    folding_param: usize,
+    eval_size: usize,
+    r_fold: CirclePoint<BaseField>,
+    vals: &Vec<BaseField>,
+    xs2s: &[Vec<CirclePointIndex>; 2],
+    xs: &Vec<CirclePointIndex>,
+) -> Vec<BaseField> {
+    let mut x_polys: Vec<[Vec<BaseField>; 2]> = vec![];
+
+    // TODO: to check correctness or possibly simplier this function
+    for l in 0..=1 {
+        for k in 0..folded_len {
+            let interp_vals: Vec<BaseField> = (0..folding_param)
+                .map(|j| vals[k + folded_len * j + eval_size * l])
+                .collect();
+            // TODO: proper error handling instead of using 'unwrap'
+
+            let inpl = circ_lagrange_interp(
+                &xs2s[l].iter().map(|x| x.to_point()).collect(),
+                &interp_vals,
+                true,
+            )
+            .unwrap();
+
+            x_polys.push(inpl);
+        }
+    }
+
+    let mut g_hat = vec![];
+    for l in 0..=1 {
+        for k in 0..folded_len {
+            let polys = &x_polys[k + folded_len * l];
+            let point = r_fold.mul_circle_point(xs[k + eval_size * l].to_point().conjugate());
+
+            let eval = eval_circ_poly_at(&polys, &point);
+            g_hat.push(eval);
+        }
+    }
+
+    g_hat
+}
+
+fn shift_g_hat<B: BackendForChannel<MC>, MC: MerkleChannel>(
+    g_hat: &Vec<BaseField>,
+    coset: Coset,
+    expand_factor: usize,
+    p_offset: CirclePointIndex,
+    eval_offset: CirclePointIndex,
+) -> CircleEvaluation<B, BaseField, NaturalOrder> {
+    let g_hat_domain =
+        CircleDomain::new(coset.repeated_double(expand_factor.ilog2())).shift(p_offset);
+    let g_hat_evaluate = CircleEvaluation::<B, BaseField, NaturalOrder>::new(
+        g_hat_domain,
+        g_hat.iter().map(|x| *x).collect(),
+    );
+
+    let poly = g_hat_evaluate.clone().bit_reverse().interpolate();
+    let shifted_domain = CircleDomain::new(coset.shift(eval_offset));
+    let g_hat_shift = poly.evaluate(shifted_domain).bit_reverse();
+
+    g_hat_shift
+}
+
+fn generate_rnd_t_values<MC: MerkleChannel>(
+    channel: &mut MC::C,
+    folded_len: usize,
+) -> (u32, Vec<u32>, Vec<u32>) {
+    let t_vals_bytes = channel.draw_random_bytes();
+    let t_vals_bytes = [
+        t_vals_bytes[0],
+        t_vals_bytes[1],
+        t_vals_bytes[2],
+        t_vals_bytes[3],
+    ];
+
+    let t_vals = u32::from_be_bytes(t_vals_bytes) % ((2 * folded_len) as u32);
+    let t_shifts: Vec<u32> = (0..t_vals).map(|t| t / 2).collect();
+    let t_conj: Vec<u32> = (0..t_vals).map(|t| t % 2).collect();
+
+    (t_vals, t_shifts, t_conj)
+}
+
+fn interpolate<B: BackendForChannel<MC>, MC: MerkleChannel>(
+    coset: &Coset,
+    to_shift: CirclePointIndex,
+    eval: &Vec<BaseField>,
+) -> CirclePoly<B> {
+    let domain = CircleDomain::new(coset.shift(to_shift));
+    let evaluation = CircleEvaluation::<B, BaseField, NaturalOrder>::new(
+        domain,
+        eval.iter().map(|x| *x).collect(),
+    );
+    let poly = evaluation.clone().bit_reverse().interpolate();
+
+    poly
+}
+
+fn get_betas<B: BackendForChannel<MC>, MC: MerkleChannel>(
+    coset: &Coset,
+    p_offset: CirclePointIndex,
+    g_hat: &Vec<BaseField>,
+    r_outs: &Vec<CirclePoint<SecureField>>,
+) -> Vec<SecureField> {
+    let poly = interpolate::<B, MC>(coset, p_offset, g_hat);
+
+    // TODO: to check correctness of this betas result
+    let betas: Vec<SecureField> = r_outs
+        .iter()
+        .map(|o| poly.eval_at_point((*o).into()))
+        .collect();
+
+    betas
+}
+
+fn calculate_rs_and_g_rs(
+    r_outs: &Vec<CirclePoint<SecureField>>,
+    betas: &Vec<SecureField>,
+    t_shifts: &Vec<u32>,
+    t_conj: &Vec<u32>,
+    coset: &Coset,
+    p_offset: CirclePointIndex,
+    g_hat: &Vec<BaseField>,
+    folded_len: usize,
+) -> (Vec<CirclePoint<SecureField>>, Vec<SecureField>) {
+    let mut rs = r_outs.to_vec();
+    let mut g_rs = betas.to_vec();
+
+    for (t, k) in t_shifts.iter().zip(t_conj.iter()) {
+        let rt2_exp = coset.repeated_double(t.ilog2());
+        let mut intr: CirclePointIndex = p_offset + rt2_exp.initial_index;
+        if k % 2 != 0 {
+            intr = intr.conj();
+        }
+        rs.push(intr.to_secure_field_point());
+
+        let g_value = g_hat[(*t as usize) + (*k as usize) * folded_len];
+        g_rs.push(SecureField::from_m31(
+            g_value,
+            BaseField::zero(),
+            BaseField::zero(),
+            BaseField::zero(),
+        ))
+    }
+
+    (rs, g_rs)
+}
+
+fn fold_val(
+    rs: &Vec<CirclePoint<SecureField>>,
+    g_rs: &Vec<SecureField>,
+    xs: &Vec<CirclePointIndex>,
+    eval_size: usize,
+    r_comb: CirclePoint<BaseField>,
+    g_hat_shift: &Vec<M31>,
+) -> Vec<BaseField> {
+    let pol = circ_lagrange_interp(&rs, &g_rs, false).unwrap();
+    let pol_vals: Vec<BaseField> = xs
+        .iter()
+        .map(|x| eval_circ_poly_at(&pol, &x.to_point()))
+        .collect();
+    let zpol = circ_zpoly(&rs, None, true); // TODO: use `split_exts` to convert zpol to M31
+    let zpol = circ_poly_to_int_poly(&zpol).unwrap();
+
+    let mut vals = vec![];
+    for j in 0..2 * eval_size {
+        let zzz: M31 = g_hat_shift.at(j);
+        let aaa = pol_vals[j];
+        let denom = eval_circ_poly_at(&zpol, &xs[j].to_point());
+        let a = (zzz - aaa) / denom;
+
+        let geom_sum_res = geom_sum((xs[j].to_point() + r_comb).x, rs.len()); // yyyy is M31
+        let val = a * geom_sum_res;
+        vals.push(val);
+    }
+
+    vals
+}
+
+fn open_merkle_tree<B: BackendForChannel<MC>, MC: MerkleChannel>(
+    folding_param: usize,
+    t_shifts: &Vec<u32>,
+    t_conj: &Vec<u32>,
+    folded_len: usize,
+    eval_size: usize,
+    merkle_tree_val: &<B as ColumnOps<M31>>::Column,
+    merkle_tree: &MerkleProver<B, MC::H>,
+) -> MerkleDecommitment<<MC as MerkleChannel>::H> {
+    let mut queried_index = vec![];
+    for j in 0..folding_param {
+        for (t, k) in t_shifts.iter().zip(t_conj.iter()) {
+            let index = (*t as usize) + (j * folded_len) + ((*k as usize) * eval_size);
+            queried_index.push(index);
+        }
+    }
+
+    let mut queries = BTreeMap::<u32, Vec<usize>>::new();
+    queries.insert(merkle_tree_val.len().ilog2(), queried_index);
+
+    let (_values, decommitment) = merkle_tree.decommit(queries.clone(), vec![merkle_tree_val]);
+
+    decommitment
+}
 
 pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
     channel: &mut MC::C,
@@ -33,20 +256,14 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
     let mut all_betas = vec![];
     let mut output_branches = vec![];
 
-    let mut xs = coset.get_mul_cycle(eval_offsets[0]);
-    // TODO: can we refactor this step of getting the conjugates? maybe somehow using `conjugate`
-    // function?
-    let mut xs_conj: Vec<CirclePointIndex> = xs.iter().map(|x| x.conj()).collect();
-    xs.append(&mut xs_conj);
+    let mut xs = calculate_xs(&coset, eval_offsets[0]);
 
     if values.len() != xs.len() && xs.len() / 2 != eval_sizes[0] {
         return Err("values.len() != xs.len() && xs.len()/2 != eval_sizes[0]".to_owned());
     }
 
-    let vals = values.to_owned();
+    let mut vals = values.to_owned();
     // TODO: to check if this is correct
-    // TODO: always combine commit with mix_root?
-    let mut merkle_tree_val_log_size = vals.len().ilog2();
     let mut merkle_tree_val = vals.iter().map(|x| *x).collect();
     let mut merkle_tree: MerkleProver<B, MC::H> = MerkleProver::commit(vec![&merkle_tree_val]);
     output_roots.push(merkle_tree.root());
@@ -63,7 +280,6 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
     let mut folded_len = 0;
 
     for i in 1..folding_params.len() + 1 {
-        g_hat = vec![];
         // # fold using r-fold
         if eval_sizes[i - 1] % folding_params[i - 1] != 0 {
             return Err("eval_sizes[i-1] % folding_params[i-1] != 0".to_owned());
@@ -72,46 +288,17 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
         folded_len = eval_sizes[i - 1] / folding_params[i - 1];
         let mut coset2 = coset.repeated_double(folded_len.ilog2());
 
-        let mut xs2s: [Vec<CirclePointIndex>; 2] = [vec![], vec![]];
-        xs2s[0] = coset2.get_mul_cycle(CirclePointIndex(0));
-        xs2s[1] = (0..folding_params[i])
-            .map(|j| xs2s[0][xs2s[0].len() - j - 1])
-            .collect();
+        let xs2s = calculate_xs2s(coset2, folding_params[i]);
 
-        let mut x_polys: Vec<[Vec<BaseField>; 2]> = vec![];
-
-        // TODO: to check correctness or possibly simplier this function
-        for l in 0..=1 {
-            for k in 0..folded_len {
-                let interp_vals: Vec<BaseField> = (0..folding_params[i - 1])
-                    .map(|j| vals[k + folded_len * j + eval_sizes[i - 1] * l])
-                    .collect();
-                // TODO: proper error handling instead of using 'unwrap'
-
-                let inpl = circ_lagrange_interp(
-                    &xs2s[l].iter().map(|x| x.to_point()).collect(),
-                    &interp_vals,
-                    true,
-                )
-                .unwrap();
-
-                x_polys.push(inpl);
-            }
-        }
-
-        // due to the different fft interleaving,
-        // the for our k, l iteration is different from
-        // our python implementation
-        for k in 0..folded_len {
-            for l in 0..=1 {
-                let polys = &x_polys[k + folded_len * l];
-                let point =
-                    r_fold.mul_circle_point(xs[k + eval_sizes[i - 1] * l].to_point().conjugate());
-
-                let eval = eval_circ_poly_at(&polys, &point);
-                g_hat.push(eval);
-            }
-        }
+        g_hat = calculate_g_hat(
+            folded_len,
+            folding_params[i - 1],
+            eval_sizes[i - 1],
+            r_fold,
+            &vals,
+            &xs2s,
+            &xs,
+        );
 
         if i == folding_params.len() {
             break;
@@ -133,25 +320,15 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
 
         let p_offset = eval_offsets[i - 1] * folding_params[i - 1];
 
-        let g_hat_domain =
-            CircleDomain::new(coset.repeated_double(expand_factor.ilog2())).shift(p_offset);
-        let g_hat_evaluate = CircleEvaluation::<B, BaseField, NaturalOrder>::new(
-            g_hat_domain,
-            g_hat.iter().map(|x| *x).collect(),
-        );
-
-        let poly = g_hat_evaluate.clone().bit_reverse().interpolate();
-        let shifted_domain = CircleDomain::new(coset.shift(eval_offsets[i]));
-        let g_hat_shift = poly.evaluate(shifted_domain).bit_reverse();
+        let g_hat_shift =
+            shift_g_hat::<B, MC>(&g_hat, coset, expand_factor, p_offset, eval_offsets[i]);
 
         let m2: MerkleProver<B, MC::H> = MerkleProver::commit(vec![&g_hat_shift.values]);
         output_roots.push(m2.root());
 
         MC::mix_root(channel, merkle_tree.root());
 
-        xs = coset.get_mul_cycle(eval_offsets[i]);
-        let mut xs_conj: Vec<CirclePointIndex> = xs.iter().map(|x| x.conj()).collect();
-        xs.append(&mut xs_conj);
+        xs = calculate_xs(&coset, eval_offsets[i]);
 
         let r_outs: Vec<CirclePoint<SecureField>> = channel
             .draw_felts(ood_rep)
@@ -159,18 +336,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
             .map(|v| (*v).into())
             .collect();
 
-        let inv_fft_domain = CircleDomain::new(coset2.shift(p_offset));
-        let g_hat_evaluate = CircleEvaluation::<B, BaseField, NaturalOrder>::new(
-            inv_fft_domain,
-            g_hat.iter().map(|x| *x).collect(),
-        );
-        let poly = g_hat_evaluate.clone().bit_reverse().interpolate();
-
-        // TODO: to check correctness of this betas result
-        let mut betas: Vec<SecureField> = r_outs
-            .iter()
-            .map(|o| poly.eval_at_point((*o).into()))
-            .collect();
+        let mut betas = get_betas::<B, MC>(&coset2, p_offset, &g_hat, &r_outs);
 
         channel.mix_felts(&betas);
         all_betas.append(&mut betas);
@@ -181,99 +347,47 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
 
         // mix again to get randomness of the next value
         channel.mix_felts(&rnds);
-        let t_vals_bytes = channel.draw_random_bytes();
-        let t_vals_bytes = [
-            t_vals_bytes[0],
-            t_vals_bytes[1],
-            t_vals_bytes[2],
-            t_vals_bytes[3],
-        ];
-
-        let t_vals = u32::from_be_bytes(t_vals_bytes) % ((2 * folded_len) as u32);
-        let t_shifts: Vec<u32> = (0..t_vals).map(|t| t / 2).collect();
-        let t_conj: Vec<u32> = (0..t_vals).map(|t| t % 2).collect();
+        let (t_vals, t_shifts, t_conj) = generate_rnd_t_values::<MC>(channel, folded_len);
 
         if repetition_params[i - 1] % 2 != 0 {
             return Err("self.repetition_params[i-1]%2 != 0".to_owned());
         }
 
-        let mut rs = r_outs;
-        for (t, k) in t_shifts.iter().zip(t_conj.iter()) {
-            let rt2_exp = coset2.repeated_double(t.ilog2());
-            let mut intr: CirclePointIndex = p_offset + rt2_exp.initial_index;
-            if k % 2 != 0 {
-                intr = intr.conj();
-            }
-            rs.push(intr.to_secure_field_point())
-        }
+        let (rs, g_rs) = calculate_rs_and_g_rs(
+            &r_outs, &betas, &t_shifts, &t_conj, &coset2, p_offset, &g_hat, folded_len,
+        );
 
-        // g_rs = betas + [g_hat[t + k*folded_len] for (t,k) in zip(t_shifts,t_conj)]
-        // TODO: rs and g_rs can be combined
-        let mut g_rs = betas;
-        for (t, k) in t_shifts.iter().zip(t_conj.iter()) {
-            let g_value = g_hat[(*t as usize) + (*k as usize) * folded_len];
-            g_rs.push(SecureField::from_m31(
-                g_value,
-                BaseField::zero(),
-                BaseField::zero(),
-                BaseField::zero(),
-            ))
-        }
-
-        let mut queried_index = vec![];
-        for j in 0..folding_params[i - 1] {
-            for (t, k) in t_shifts.iter().zip(t_conj.iter()) {
-                let index = (*t as usize) + (j * folded_len) + ((*k as usize) * eval_sizes[i - 1]);
-                queried_index.push(index);
-            }
-        }
-
-        let mut queries = BTreeMap::<u32, Vec<usize>>::new();
-        queries.insert(merkle_tree_val_log_size, queried_index);
-
-        let (_values, decommitment) = merkle_tree.decommit(queries.clone(), vec![&merkle_tree_val]);
+        let decommitment = open_merkle_tree(
+            folding_params[i - 1],
+            &t_shifts,
+            &t_conj,
+            folded_len,
+            eval_sizes[i - 1],
+            &merkle_tree_val,
+            &merkle_tree,
+        );
         output_branches.push(decommitment);
 
-        // m = m2
-        // TODO: merkle_tree_val_log_size can be removed by getting length from merkle_tree_val
-        merkle_tree_val_log_size = g_hat_shift.values.len().ilog2();
-        merkle_tree_val = g_hat_shift.values;
+        merkle_tree_val = g_hat_shift.clone().values;
         merkle_tree = m2;
 
-        let pol = circ_lagrange_interp(&rs, &g_rs, false).unwrap();
-        let pol_vals: Vec<BaseField> = xs
-            .iter()
-            .map(|x| eval_circ_poly_at(&pol, &x.to_point()))
-            .collect();
-        let zpol = circ_zpoly(&rs, None, true); // TODO: use `split_exts` to convert zpol to M31
-        let zpol = circ_poly_to_int_poly(&zpol).unwrap();
-
-        let mut vals = vec![];
-        for j in 0..2 * eval_sizes[i] {
-            let zzz: M31 = merkle_tree_val.at(j);
-            let aaa = pol_vals[j];
-            let denom = eval_circ_poly_at(&zpol, &xs[j].to_point());
-            let a = (zzz - aaa) / denom;
-
-            let geom_sum_res = geom_sum((xs[j].to_point() + r_comb).x, rs.len()); // yyyy is M31
-            let val = a * geom_sum_res;
-            vals.push(val);
-        }
+        vals = fold_val(
+            &rs,
+            &g_rs,
+            &xs,
+            eval_sizes[i],
+            r_comb,
+            &g_hat_shift.values.to_cpu(),
+        );
     }
 
     let final_folding_param = folding_params[folding_params.len() - 1];
     let to_shift = eval_offsets[eval_offsets.len() - 1] * final_folding_param;
-    let domain = CircleDomain::new(
-        coset
-            .repeated_double(final_folding_param as u32)
-            .shift(to_shift),
+    let g_pol = interpolate::<B, MC>(
+        &coset.repeated_double(final_folding_param as u32),
+        to_shift,
+        &g_hat,
     );
-
-    let g_hat_evaluate = CircleEvaluation::<B, BaseField, NaturalOrder>::new(
-        domain,
-        g_hat.iter().map(|x| *x).collect(),
-    );
-    let g_pol = g_hat_evaluate.bit_reverse().interpolate();
 
     let numer = values.len(); // maxdeg_plus_1
     let denom: usize = folding_params.iter().product();
@@ -289,7 +403,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
 
     let g_pol_final_secure: Vec<QM31> = g_pol_final
         .iter()
-        .map(|g| SecureField::from_m31(*g, BaseField::zero(), BaseField::zero(), BaseField::zero()))
+        .map(|g| SecureField::from_single_m31(*g))
         .collect();
 
     channel.mix_felts(&g_pol_final_secure);
@@ -314,19 +428,16 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
         channel.mix_u64(t_val as u64);
     }
 
-    let i = folding_params.len();
-    let mut queried_index = vec![];
-    for j in 0..folding_params[folding_params.len() - 1] {
-        for (t, k) in t_shifts.iter().zip(t_conj.iter()) {
-            let index = (*t as usize) + (j * folded_len) + ((*k as usize) * eval_sizes[i - 1]);
-            queried_index.push(index);
-        }
-    }
+    let decommitment = open_merkle_tree(
+        folding_params[folding_params.len() - 1],
+        &t_shifts,
+        &t_conj,
+        folded_len,
+        eval_sizes[folding_params.len() - 1],
+        &merkle_tree_val,
+        &merkle_tree,
+    );
 
-    let mut queries = BTreeMap::<u32, Vec<usize>>::new();
-    queries.insert(merkle_tree_val_log_size, queried_index);
-
-    let (_values, decommitment) = merkle_tree.decommit(queries.clone(), vec![&merkle_tree_val]);
     output_branches.push(decommitment);
 
     Ok(())
@@ -702,7 +813,7 @@ mod tests {
     use crate::core::fields::m31::{BaseField, M31};
     use crate::core::pcs::PcsConfig;
     use crate::core::poly::circle::{CanonicCoset, CircleDomain, CircleEvaluation};
-    use crate::core::poly::{BitReversedOrder, NaturalOrder};
+    use crate::core::poly::NaturalOrder;
 
     #[test]
     fn test_get_mul_cycle() {
@@ -985,128 +1096,21 @@ mod tests {
         assert_eq!(evals.values, values);
     }
 
-    /// to remove
-    #[test]
-    fn test_fft_loop() {
-        let poly_log_length = 4;
-        let offset: CirclePointIndex = CirclePointIndex(2);
-        let coset = CanonicCoset::new(poly_log_length).coset.shift(offset);
-        let domain = CircleDomain::new(coset);
-
-        let mut aaaa = vec![];
-        for i in 0..1 << (poly_log_length + 1) {
-            let mut values: Vec<M31> = (0..1 << (poly_log_length + 1)).map(|x| M31(0)).collect();
-            values[i] = M31(1);
-            let evaluations = CircleEvaluation::<CpuBackend, BaseField, NaturalOrder>::new(
-                domain,
-                values.clone(),
-            );
-            let eval_bit_reversed = evaluations.bit_reverse();
-
-            let res = eval_bit_reversed.interpolate();
-            // let sum = res
-            //     .coeffs
-            //     .iter()
-            //     .enumerate()
-            //     .fold(M31(0), |acc, (i, x)| acc + (*x * (M31(i as u32 + 1))));
-            let mut sum = M31(0);
-            for j in 0..res.coeffs.len() {
-                // sum when j= 4, {0:1149060475}
-                let xxx = res.coeffs[j];
-                sum = sum + (xxx * M31(j as u32 + 1));
-            }
-
-            println!("sum_{:?}: {:?}", i, sum.0);
-            aaaa.push(sum.0);
-
-            // println!("res: {:?}", res);
-        }
-
-        println!("aaaa: {:?}", aaaa);
-    }
-
-    /// to remove
-    #[test]
-    fn test_fft_with_offset2() {
-        let poly_log_length = 4;
-        let offset: CirclePointIndex = CirclePointIndex(2);
-        let coset = CanonicCoset::new(poly_log_length).coset.shift(offset);
-        let domain = CircleDomain::new(coset);
-        let mut values: Vec<M31> = (0..1 << (poly_log_length + 1)).map(|x| M31(0)).collect();
-        values[1] = M31(1); // -> values [16]
-        let evaluations = CircleEvaluation::<CpuBackend, BaseField, BitReversedOrder>::new(
-            domain,
-            values.clone(),
-        );
-        let res = evaluations.interpolate();
-        println!("values: {:?}\n", values);
-
-        println!("res: {:?}", res);
-
-        let sum = res
-            .coeffs
-            .iter()
-            .enumerate()
-            .fold(M31(0), |acc, (i, x)| acc + (*x * (M31(i as u32 + 1))));
-        println!("sum: {:?}", sum);
-
-        let mut sum = M31(0);
-        for (i, x) in res.coeffs.iter().enumerate() {
-            sum = sum + (*x * M31(i as u32 + 1));
-        }
-        println!("sum: {:?}", sum);
-
-        // 664299329
-        // 63104004
-        //         sum=0;
-        // for(int i = 0; i < res.size(); i++) {
-        // sum +=(i+1)*res[i];
-        // }
-        // [1073741839, 0, 848656137, 0, 538814718, 0, 1904590433, 0, 1682675117, 0, 69421710, 0,
-        // 1916098926, 0, 2058877293, 0, 289278745, 0, 1043398579, 0, 187257111, 0, 242094851, 0,
-        // 548663305, 0, 1286791771, 0, 1362845468, 0, 1963374576, 341246954]
-    }
-
-    /// to remove
-    #[test]
-    fn test_fft_with_offset_example() {
-        let poly_log_length = 4;
-        let offset: CirclePointIndex = CirclePointIndex(2);
-        let coset = CanonicCoset::new(poly_log_length).coset.shift(offset);
-        //    .circle_domain()
-        //     .half_coset;
-        let rt = coset.step;
-        println!("{:?}", rt);
-        println!("coset.size(): {:?}", coset.size());
-        let values_of_cosets: Vec<CirclePoint<BaseField>> = coset.iter().collect();
-        println!("values_of_cosets: {:?}", values_of_cosets);
-
-        let offset_point = offset.to_point();
-        println!("{:?}", offset_point);
-        // let domain = CircleDomain::new(coset).shift(offset);
-        let domain = CircleDomain::new(coset);
-
-        // a1 b1 a2 b2
-        // -> a1 a2 b1 b2
-
-        // [1,2,3,4] rust
-        // [1,3,2,4] python
-        let mut values: Vec<M31> = (0..1 << (poly_log_length + 1)).map(|x| M31(0)).collect();
-        values[1] = M31(1); // -> values [16]
-        let evaluations =
-            CircleEvaluation::<CpuBackend, BaseField, BitReversedOrder>::new(domain, values);
-
-        let poly = evaluations.clone().interpolate();
-        let eval = poly.eval_at_point(CirclePointIndex(2).to_secure_field_point());
-
-        println!("poly: {:?}", poly);
-        // [67108864, 1292253447, 181339176, 1625457570, 1726293217, 895384967, 538115667,
-        // 1821208102, 604045020, 1930014043, 1647452692, 277488825, 243651426, 408548010,
-        // 902829831, 1805613252, 460722087, 1692334092, 1635132500, 502277012, 766471223,
-        // 1434355135, 1842054946, 279000510, 382866192, 1125260653, 529632953, 1122376117,
-        // 522736966, 794181501, 1002355404, 1363505214]
-        println!("eval: {:?}", eval);
-    }
-
     // circ_poly_to_int_poly
+
+    #[test]
+    fn test_g_hat() {
+        todo!();
+    }
+
+    #[test]
+    fn test_g_hat_shift() {
+        todo!();
+    }
 }
+
+// 1. test g_hat
+// 2. test g_hat_shift
+// 3. test beta from randomness
+// 4. test circ_lagrange from r_s and g_s and eval_circ_poly_at with xs
+// 5. test geo_sum and final val calculation
