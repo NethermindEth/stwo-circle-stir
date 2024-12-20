@@ -88,14 +88,11 @@ fn shift_g_hat<B: BackendForChannel<MC>, MC: MerkleChannel>(
     p_offset: CirclePointIndex,
     eval_offset: CirclePointIndex,
 ) -> CircleEvaluation<B, BaseField, NaturalOrder> {
-    let g_hat_domain =
-        CircleDomain::new(coset.repeated_double(expand_factor.ilog2())).shift(p_offset);
-    let g_hat_evaluate = CircleEvaluation::<B, BaseField, NaturalOrder>::new(
-        g_hat_domain,
-        g_hat.iter().map(|x| *x).collect(),
+    let poly = interpolate::<B, MC>(
+        &coset.repeated_double(expand_factor.ilog2()),
+        p_offset,
+        g_hat,
     );
-
-    let poly = g_hat_evaluate.clone().bit_reverse().interpolate();
     let shifted_domain = CircleDomain::new(coset.shift(eval_offset));
     let g_hat_shift = poly.evaluate(shifted_domain).bit_reverse();
 
@@ -105,20 +102,50 @@ fn shift_g_hat<B: BackendForChannel<MC>, MC: MerkleChannel>(
 fn generate_rnd_t_values<MC: MerkleChannel>(
     channel: &mut MC::C,
     folded_len: usize,
-) -> (u32, Vec<u32>, Vec<u32>) {
-    let t_vals_bytes = channel.draw_random_bytes();
-    let t_vals_bytes = [
-        t_vals_bytes[0],
-        t_vals_bytes[1],
-        t_vals_bytes[2],
-        t_vals_bytes[3],
-    ];
+    repetition_param: usize,
+) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+    let mut t_vals = vec![];
+    for _ in 0..repetition_param {
+        let t_vals_bytes = channel.draw_random_bytes();
+        let t_vals_bytes = [
+            t_vals_bytes[0],
+            t_vals_bytes[1],
+            t_vals_bytes[2],
+            t_vals_bytes[3],
+        ];
+        let t_val = u32::from_be_bytes(t_vals_bytes) % ((2 * folded_len) as u32);
+        t_vals.push(t_val);
 
-    let t_vals = u32::from_be_bytes(t_vals_bytes) % ((2 * folded_len) as u32);
-    let t_shifts: Vec<u32> = (0..t_vals).map(|t| t / 2).collect();
-    let t_conj: Vec<u32> = (0..t_vals).map(|t| t % 2).collect();
+        channel.mix_u64(t_val as u64);
+    }
+
+    let t_shifts: Vec<u32> = t_vals.iter().map(|&t| t / 2).collect();
+    let t_conj: Vec<u32> = t_vals.iter().map(|&t| t % 2).collect();
 
     (t_vals, t_shifts, t_conj)
+}
+
+fn generate_rnd_r_t_values<MC: MerkleChannel>(
+    channel: &mut MC::C,
+    folded_len: usize,
+    repetition_param: usize,
+) -> (
+    CirclePoint<M31>,
+    CirclePoint<M31>,
+    Vec<u32>,
+    Vec<u32>,
+    Vec<u32>,
+) {
+    let rnds = channel.draw_felts(2);
+    let r_fold = M31_CIRCLE_GEN.mul(rnds[0].0 .0 .0.into());
+    let r_comb = M31_CIRCLE_GEN.mul(rnds[0].0 .0 .0.into());
+
+    // mix again to get randomness of the next value
+    channel.mix_felts(&rnds);
+    let (t_vals, t_shifts, t_conj) =
+        generate_rnd_t_values::<MC>(channel, folded_len, repetition_param);
+
+    (r_fold, r_comb, t_vals, t_shifts, t_conj)
 }
 
 fn interpolate<B: BackendForChannel<MC>, MC: MerkleChannel>(
@@ -303,21 +330,17 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
         if i == folding_params.len() {
             break;
         }
-
         if eval_sizes[i] % folded_len != 0 {
             return Err("eval_sizes[i] % folded_len != 0".into());
         }
-
-        let expand_factor = eval_sizes[i] / folded_len;
-
         if eval_sizes[i - 1] % eval_sizes[i] != 0 {
             return Err("self.eval_sizes[i-1] % self.eval_sizes[i] != 0".into());
         }
 
+        let expand_factor = eval_sizes[i] / folded_len;
         let eval_size_scale = eval_sizes[i - 1] / eval_sizes[i];
         coset = coset.repeated_double(eval_size_scale.ilog2());
         coset2 = coset2.repeated_double(expand_factor.ilog2());
-
         let p_offset = eval_offsets[i - 1] * folding_params[i - 1];
 
         let g_hat_shift =
@@ -341,13 +364,12 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
         channel.mix_felts(&betas);
         all_betas.append(&mut betas);
 
-        let rnds = channel.draw_felts(2);
-        r_fold = M31_CIRCLE_GEN.mul(rnds[0].0 .0 .0.into());
-        let r_comb = M31_CIRCLE_GEN.mul(rnds[0].0 .0 .0.into());
-
-        // mix again to get randomness of the next value
-        channel.mix_felts(&rnds);
-        let (t_vals, t_shifts, t_conj) = generate_rnd_t_values::<MC>(channel, folded_len);
+        let r_comb;
+        let t_vals;
+        let t_shifts;
+        let t_conj;
+        (r_fold, r_comb, t_vals, t_shifts, t_conj) =
+            generate_rnd_r_t_values::<MC>(channel, folded_len, repetition_params[i - 1]);
 
         if repetition_params[i - 1] % 2 != 0 {
             return Err("self.repetition_params[i-1]%2 != 0".to_owned());
@@ -408,25 +430,11 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
 
     channel.mix_felts(&g_pol_final_secure);
 
-    let mut t_shifts = vec![];
-    let mut t_conj = vec![];
-    for _ in 0..repetition_params[repetition_params.len() - 1] {
-        let t_val_bytes = channel.draw_random_bytes();
-
-        let t_val_bytes = [
-            t_val_bytes[0],
-            t_val_bytes[1],
-            t_val_bytes[2],
-            t_val_bytes[3],
-        ];
-
-        let t_val = u32::from_be_bytes(t_val_bytes) % ((2 * folded_len) as u32);
-
-        t_shifts.push(t_val / 2);
-        t_conj.push(t_val % 2);
-
-        channel.mix_u64(t_val as u64);
-    }
+    let (t_vals, t_shifts, t_conj) = generate_rnd_t_values::<MC>(
+        channel,
+        folded_len,
+        repetition_params[repetition_params.len() - 1],
+    );
 
     let decommitment = open_merkle_tree(
         folding_params[folding_params.len() - 1],
