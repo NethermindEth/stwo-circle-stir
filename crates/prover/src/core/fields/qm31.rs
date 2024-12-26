@@ -18,7 +18,7 @@ pub const R: CM31 = CM31::from_u32_unchecked(2, 1);
 /// Equivalent to CM31\[x\] over (x^2 - 2 - i) as the irreducible polynomial.
 /// Represented as ((a, b), (c, d)) of (a + bi) + (c + di)u.
 #[derive(Copy, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
-pub struct QM31(pub CM31, pub CM31);
+pub struct QM31(pub CM31, pub CM31); // equivalent to CM(-2, -1, modulus) to the rust code
 pub type SecureField = QM31;
 
 impl_field!(QM31, P4);

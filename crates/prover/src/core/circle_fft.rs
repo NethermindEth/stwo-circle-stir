@@ -22,9 +22,10 @@ use crate::core::fields::ComplexConjugate;
 fn calculate_xs2s(coset: Coset, folding_param: usize) -> [Vec<CirclePointIndex>; 2] {
     let mut xs2s: [Vec<CirclePointIndex>; 2] = [vec![], vec![]];
     xs2s[0] = coset.get_mul_cycle(CirclePointIndex(0));
-    xs2s[1] = (0..folding_param)
-        .map(|j| xs2s[0][xs2s[0].len() - j - 1])
-        .collect();
+    xs2s[1].push(xs2s[0][0]);
+    for j in 1..folding_param {
+        xs2s[1].push(xs2s[0][xs2s[0].len() - j]);
+    }
 
     xs2s
 }
@@ -48,14 +49,18 @@ fn calculate_g_hat(
 ) -> Vec<BaseField> {
     let mut x_polys: Vec<[Vec<BaseField>; 2]> = vec![];
 
-    // TODO: to check correctness or possibly simplier this function
+    let mut xs2s_points: [Vec<CirclePoint<M31>>; 2] = [vec![], vec![]];
+    xs2s_points[0] = xs2s[0].iter().map(|x| x.to_point()).collect();
+    xs2s_points[1] = xs2s[1].iter().map(|x| x.to_point()).collect();
+
+    let xs_points: Vec<CirclePoint<M31>> = xs.iter().map(|x| x.to_point()).collect();
+
     for l in 0..=1 {
         for k in 0..folded_len {
             let interp_vals: Vec<BaseField> = (0..folding_param)
                 .map(|j| vals[k + folded_len * j + eval_size * l])
                 .collect();
             // TODO: proper error handling instead of using 'unwrap'
-
             let inpl = circ_lagrange_interp(
                 &xs2s[l].iter().map(|x| x.to_point()).collect(),
                 &interp_vals,
@@ -171,6 +176,11 @@ fn get_betas<B: BackendForChannel<MC>, MC: MerkleChannel>(
 ) -> Vec<SecureField> {
     let poly = interpolate::<B, MC>(coset, p_offset, g_hat);
 
+    for r in r_outs.iter() {
+        let e = poly.eval_at_point((*r).into());
+        println!("{:?}", e);
+    }
+
     // TODO: to check correctness of this betas result
     let betas: Vec<SecureField> = r_outs
         .iter()
@@ -194,20 +204,18 @@ fn calculate_rs_and_g_rs(
     let mut g_rs = betas.to_vec();
 
     for (t, k) in t_shifts.iter().zip(t_conj.iter()) {
-        let rt2_exp = coset.repeated_double(t.ilog2());
-        let mut intr: CirclePointIndex = p_offset + rt2_exp.initial_index;
+        let mut intr = p_offset + (coset.initial_index * (*t as usize));
+
+        // let rt2_exp = coset.repeated_double(t.ilog2()); // This might be wrong? we may need a
+        // coset function that handles for custom multiplication? let mut intr:
+        // CirclePointIndex = p_offset + rt2_exp.initial_index;
         if k % 2 != 0 {
             intr = intr.conj();
         }
         rs.push(intr.to_secure_field_point());
 
         let g_value = g_hat[(*t as usize) + (*k as usize) * folded_len];
-        g_rs.push(SecureField::from_m31(
-            g_value,
-            BaseField::zero(),
-            BaseField::zero(),
-            BaseField::zero(),
-        ))
+        g_rs.push(SecureField::from_single_m31(g_value))
     }
 
     (rs, g_rs)
@@ -491,7 +499,8 @@ where
     if pts.len() % 2 == 1 {
         // if nzero.is_some() &&
         let pt = pts[pts.len() - 1];
-        if let Some(_pt) = nzero {
+
+        if nzero.is_some() && nzero.unwrap().x == pts[pts.len() - 1].x {
             ans = mul_circ_polys(&ans, &[vec![pts[pts.len() - 1].y], vec![-F::one()]]);
         } else {
             ans = mul_circ_polys(&ans, &[vec![pts[pts.len() - 1].x, -F::one()], vec![]]);
@@ -560,6 +569,10 @@ fn mul_circ_by_const<F: Field>(a: &[Vec<F>; 2], c: &F) -> [Vec<F>; 2] {
 }
 
 fn mul_polys<F: Field>(a: &Vec<F>, b: &Vec<F>) -> Vec<F> {
+    if a.len() + b.len() == 0 {
+        return vec![];
+    }
+
     let mut o = vec![F::zero(); a.len() + b.len() - 1];
     for i in 0..a.len() {
         for j in 0..b.len() {
@@ -734,7 +747,7 @@ trait Conj {
 
 impl Conj for CirclePointIndex {
     fn conj(&self) -> Self {
-        let conj_index: u32 = P - (self.0) as u32;
+        let conj_index: u32 = (P + 1) - (self.0) as u32;
         // Self((P - self.0).try_into().unwrap())
         Self(conj_index as usize)
     }
@@ -810,18 +823,329 @@ impl CirclePoint<BaseField> {
 
 #[cfg(test)]
 mod tests {
-    use super::{circ_lagrange_interp, line, AllConjugate};
+    use super::{
+        calculate_g_hat, calculate_xs, calculate_xs2s, circ_lagrange_interp, line, shift_g_hat,
+        AllConjugate,
+    };
     use crate::core::backend::CpuBackend;
     use crate::core::circle::{CirclePoint, CirclePointIndex};
     use crate::core::circle_fft::{
-        add_circ_polys, add_polys, circ_zpoly, eval_circ_poly_at, eval_poly_at, mul_circ_by_const,
-        mul_circ_polys, mul_polys, sub_circ_polys, sub_polys,
+        add_circ_polys, add_polys, circ_zpoly, eval_circ_poly_at, eval_poly_at, get_betas,
+        interpolate, mul_circ_by_const, mul_circ_polys, mul_polys, sub_circ_polys, sub_polys, Conj,
     };
     use crate::core::fields::cm31::CM31;
     use crate::core::fields::m31::{BaseField, M31};
+    use crate::core::fields::qm31::{SecureField, QM31};
     use crate::core::pcs::PcsConfig;
-    use crate::core::poly::circle::{CanonicCoset, CircleDomain, CircleEvaluation};
-    use crate::core::poly::NaturalOrder;
+    use crate::core::poly::circle::{CanonicCoset, CircleDomain, CirclePoly};
+    use crate::core::vcs::blake2_merkle::Blake2sMerkleChannel;
+
+    #[test]
+    fn test_calculate_xs2s() {
+        let log_size = 3;
+        let coset = CanonicCoset::new(log_size).coset;
+        let folding_param = 1 << 2;
+        let xs2s = calculate_xs2s(coset, folding_param);
+
+        let xs2s_points_0: Vec<CirclePoint<M31>> = xs2s[0].iter().map(|x| x.to_point()).collect();
+        let xs2s_points_1: Vec<CirclePoint<M31>> = xs2s[1].iter().map(|x| x.to_point()).collect();
+
+        assert_eq!(
+            xs2s_points_0,
+            vec![
+                CirclePoint {
+                    x: M31(1),
+                    y: M31(0)
+                },
+                CirclePoint {
+                    x: M31(32768),
+                    y: M31(2147450879)
+                },
+                CirclePoint {
+                    x: M31(0),
+                    y: M31(2147483646)
+                },
+                CirclePoint {
+                    x: M31(2147450879),
+                    y: M31(2147450879)
+                },
+                CirclePoint {
+                    x: M31(2147483646),
+                    y: M31(0)
+                },
+                CirclePoint {
+                    x: M31(2147450879),
+                    y: M31(32768)
+                },
+                CirclePoint {
+                    x: M31(0),
+                    y: M31(1)
+                },
+                CirclePoint {
+                    x: M31(32768),
+                    y: M31(32768)
+                }
+            ]
+        );
+        assert_eq!(
+            xs2s_points_1,
+            vec![
+                CirclePoint {
+                    x: M31(1),
+                    y: M31(0)
+                },
+                CirclePoint {
+                    x: M31(32768),
+                    y: M31(32768)
+                },
+                CirclePoint {
+                    x: M31(0),
+                    y: M31(1)
+                },
+                CirclePoint {
+                    x: M31(2147450879),
+                    y: M31(32768)
+                }
+            ]
+        );
+        println!("{:?}", xs2s);
+    }
+
+    #[test]
+    fn test_conj() {
+        let index = CirclePointIndex(5);
+        let point = index.to_point();
+
+        let index_conj = index.conj();
+        let conj_point = index_conj.to_point();
+
+        println!("{:?}", conj_point);
+
+        assert_eq!(
+            conj_point,
+            CirclePoint::<M31> {
+                x: point.x,
+                y: -point.y,
+            }
+        );
+    }
+
+    #[test]
+    fn test_calculate_xs() {
+        let log_size = 3;
+        let coset = CanonicCoset::new(log_size).coset;
+        let offset = CirclePointIndex(1);
+        let offset_point = offset.to_point();
+        let xs = calculate_xs(&coset, offset);
+        let xs_points: Vec<CirclePoint<M31>> = xs.iter().map(|x| x.to_point()).collect();
+
+        assert_eq!(
+            xs_points,
+            vec![
+                CirclePoint {
+                    x: M31(2),
+                    y: M31(1268011823)
+                },
+                CirclePoint {
+                    x: M31(697879444),
+                    y: M31(697748372)
+                },
+                CirclePoint {
+                    x: M31(1268011823),
+                    y: M31(2147483645)
+                },
+                CirclePoint {
+                    x: M31(697748372),
+                    y: M31(1449604203)
+                },
+                CirclePoint {
+                    x: M31(2147483645),
+                    y: M31(879471824)
+                },
+                CirclePoint {
+                    x: M31(1449604203),
+                    y: M31(1449735275)
+                },
+                CirclePoint {
+                    x: M31(879471824),
+                    y: M31(2)
+                },
+                CirclePoint {
+                    x: M31(1449735275),
+                    y: M31(697879444)
+                },
+                CirclePoint {
+                    x: M31(2),
+                    y: M31(879471824)
+                },
+                CirclePoint {
+                    x: M31(697879444),
+                    y: M31(1449735275)
+                },
+                CirclePoint {
+                    x: M31(1268011823),
+                    y: M31(2)
+                },
+                CirclePoint {
+                    x: M31(697748372),
+                    y: M31(697879444)
+                },
+                CirclePoint {
+                    x: M31(2147483645),
+                    y: M31(1268011823)
+                },
+                CirclePoint {
+                    x: M31(1449604203),
+                    y: M31(697748372)
+                },
+                CirclePoint {
+                    x: M31(879471824),
+                    y: M31(2147483645)
+                },
+                CirclePoint {
+                    x: M31(1449735275),
+                    y: M31(1449604203)
+                }
+            ]
+        );
+
+        println!("{:?}", xs_points);
+    }
+
+    #[test]
+    fn test_calculate_g_hat() {
+        let log_size = 3;
+        let eval_size = 1 << log_size;
+        let folding_param = 2;
+        let folded_len: usize = eval_size / folding_param;
+        let r_fold = CirclePointIndex(1).to_point();
+        let coset = CanonicCoset::new(log_size).coset;
+        let coset2 = coset.repeated_double(folded_len.ilog2());
+
+        let vals: Vec<M31> = (0..2 * eval_size).map(|x| BaseField::from(x)).collect();
+
+        let xs = calculate_xs(&coset, CirclePointIndex(0));
+        let xs2s = calculate_xs2s(coset2, folding_param);
+
+        let g_hat = calculate_g_hat(
+            folded_len,
+            folding_param,
+            eval_size,
+            r_fold,
+            &vals,
+            &xs2s,
+            &xs,
+        );
+
+        assert_eq!(
+            g_hat,
+            vec![
+                M31(2147483645),
+                M31(1395496747),
+                M31(388540003),
+                M31(1395758893),
+                M31(6),
+                M31(751724770),
+                M31(1758943660),
+                M31(751986916)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_shift_g_hat() {
+        let log_size = 3;
+        let expand_factor = 2;
+        let eval_size = 1 << log_size + 1; // because the canonic coset uses half coset hence we need to double the eval_size
+        let coset = CanonicCoset::new(log_size + (expand_factor as usize).ilog2()).coset;
+        let vals: Vec<M31> = (0..eval_size).map(|x| BaseField::from(x)).collect();
+        let p_offset = CirclePointIndex(1);
+        let eval_offset = CirclePointIndex(2);
+        // offset_points are used to print out the CirclePoint values to input it to our python
+        // implementation for testing
+        let eval_offset_point = coset.shift(eval_offset);
+        let p_offset_point = coset
+            .repeated_double((expand_factor as usize).ilog2())
+            .shift(p_offset);
+
+        let g_hat_shift = shift_g_hat::<CpuBackend, Blake2sMerkleChannel>(
+            &vals,
+            coset,
+            expand_factor as usize,
+            p_offset,
+            eval_offset,
+        );
+
+        assert_eq!(
+            g_hat_shift.values,
+            vec![
+                M31(1613244122),
+                M31(1222128567),
+                M31(1459611888),
+                M31(888544057),
+                M31(802115697),
+                M31(731278093),
+                M31(751618954),
+                M31(2031708490),
+                M31(731490323),
+                M31(1739438338),
+                M31(28440601),
+                M31(1484914107),
+                M31(1897995022),
+                M31(1974300165),
+                M31(1271701725),
+                M31(698822794),
+                M31(1621673201),
+                M31(1213699488),
+                M31(1468040967),
+                M31(880114978),
+                M31(810544776),
+                M31(722849014),
+                M31(760048033),
+                M31(2023279411),
+                M31(739919402),
+                M31(1731009259),
+                M31(36869680),
+                M31(1476485028),
+                M31(1906424101),
+                M31(1965871086),
+                M31(1280130804),
+                M31(690393715),
+            ]
+        );
+
+        println!("{:?}", g_hat_shift);
+    }
+
+    #[test]
+    fn test_get_betas() {
+        let log_size = 3;
+        let coset = CanonicCoset::new(log_size).coset();
+        let offset = CirclePointIndex(1);
+        let offset_point = coset.shift(offset);
+        let g_hat = (0..1 << (log_size + 1)).map(|x| M31(x)).collect();
+        let rnds = vec![
+            QM31::from_u32_unchecked(1, 2, 3, 4),
+            QM31::from_u32_unchecked(5, 6, 7, 8),
+            QM31::from_u32_unchecked(9, 10, 11, 12),
+        ];
+        // let r_outs: Vec<CirclePoint<SecureField>> = rnds.iter().map(|v| (*v).into()).collect();
+        // // this could be wrong?? println!("{:?}", r_outs);
+
+        // let xxxxx = QM31::from_u32_unchecked(1, 2, 3, 4);
+        // let yyyyy: CirclePoint<SecureField> = xxxxx.into();
+        // println!("{:?}", yyyyy);
+
+        // (((72722396, 315516689), (572797515, 1911932623)), ((1831966960, 72722395), (235551028,
+        // 572797512)))
+        let r_outs: Vec<CirclePoint<SecureField>> = vec![CirclePoint {
+            x: QM31::from_u32_unchecked(72722396, 315516689, 572797515, 1911932623),
+            y: QM31::from_u32_unchecked(1831966960, 72722395, 235551028, 572797512),
+        }];
+
+        let betas = get_betas::<CpuBackend, Blake2sMerkleChannel>(&coset, offset, &g_hat, &r_outs);
+        println!("{:?}", betas);
+    }
 
     #[test]
     fn test_get_mul_cycle() {
@@ -898,14 +1222,6 @@ mod tests {
         // assert_eq!(conjs[1], QM31::from_m31(base_1, base_2, -base_3, -base_4));
         // // assert for all remaining conjugates
     }
-
-    // base field
-    // cm31
-    // qm31
-
-    // circlepoint(basefield)
-    // circlepoint(cm31)
-    // circlepoint(qm31)
 
     #[test]
     fn test_line() {
@@ -1049,19 +1365,20 @@ mod tests {
         assert_eq!(res, [vec![M31(2), M31(2147483632)], vec![M31(463810318)]]);
     }
 
+    // when you have the coset, take the first point of the coset, v
+    // offset - v
+    // (7,77707....) - (1179735656, 1241207368)
     #[test]
     fn test_fft_ifft_with_offset() {
         let poly_log_length = 4;
         let offset: CirclePointIndex = CirclePointIndex(2);
         let offset_point = offset.to_point();
         println!("{:?}", offset_point);
-        let coset = CanonicCoset::new(poly_log_length).coset.shift(offset);
-        let domain = CircleDomain::new(coset);
+        let coset = CanonicCoset::new(poly_log_length).coset;
         let values: Vec<M31> = (0..1 << (poly_log_length + 1)).map(|x| M31(x)).collect();
-        let evaluations =
-            CircleEvaluation::<CpuBackend, BaseField, NaturalOrder>::new(domain, values.clone());
-        let poly = evaluations.bit_reverse().interpolate();
+        let poly = interpolate::<CpuBackend, Blake2sMerkleChannel>(&coset, offset, &values);
         let coeffs = poly.clone().coeffs;
+
         assert_eq!(
             coeffs,
             [
@@ -1100,6 +1417,7 @@ mod tests {
             ]
         );
 
+        let domain = CircleDomain::new(coset.shift(offset));
         let evals = poly.evaluate(domain).bit_reverse();
         assert_eq!(evals.values, values);
     }
@@ -1107,18 +1425,45 @@ mod tests {
     // circ_poly_to_int_poly
 
     #[test]
-    fn test_g_hat() {
-        todo!();
-    }
+    fn test_eval_at_point_secure_field() {
+        let r_out: CirclePoint<SecureField> = CirclePoint {
+            x: QM31::from_u32_unchecked(72722396, 315516689, 572797515, 1911932623),
+            y: QM31::from_u32_unchecked(1831966960, 72722395, 235551028, 572797512),
+        };
 
-    #[test]
-    fn test_g_hat_shift() {
-        todo!();
+        // poly = [1073741831, 0, 142172079, 0, 1031667956, 0, 1966318798, 0, 1429038289, 0,
+        // 251819275, 0, 1173966850, 0, 772153390, 613376015]
+
+        let poly = CirclePoly::<CpuBackend>::new(vec![
+            M31(1073741831),
+            M31(0),
+            M31(142172079),
+            M31(0),
+            M31(1031667956),
+            M31(0),
+            M31(1966318798),
+            M31(0),
+            M31(1429038289),
+            M31(0),
+            M31(251819275),
+            M31(0),
+            M31(1173966850),
+            M31(0),
+            M31(772153390),
+            M31(613376015),
+        ]);
+
+        let e = poly.eval_at_point(r_out.into());
+        println!("{:?}", e);
     }
 }
 
-// 1. test g_hat
-// 2. test g_hat_shift
-// 3. test beta from randomness
-// 4. test circ_lagrange from r_s and g_s and eval_circ_poly_at with xs
-// 5. test geo_sum and final val calculation
+// all_conj
+// qm31
+// circlepoint(basefield)
+// circlepoint(cm31)
+// circlepoint(qm31)
+// get_beta 
+// eval_at_point
+// calculate r_s & g_s
+// fold
