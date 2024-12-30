@@ -6,6 +6,7 @@ use std::vec;
 
 use itertools::max;
 use num_traits::Zero;
+use serde::{Deserialize, Serialize};
 
 use super::backend::{BackendForChannel, Column, ColumnOps};
 use super::channel::{Channel, MerkleChannel};
@@ -16,6 +17,7 @@ use super::fields::qm31::{SecureField, QM31};
 use super::fields::{Field, FieldExpOps};
 use super::poly::circle::{CircleDomain, CircleEvaluation, CirclePoly};
 use super::poly::NaturalOrder;
+use super::vcs::ops::MerkleHasher;
 use super::vcs::prover::{MerkleDecommitment, MerkleProver};
 use crate::core::fields::ComplexConjugate;
 
@@ -214,7 +216,8 @@ fn calculate_rs_and_g_rs(
         }
         rs.push(intr.to_secure_field_point());
 
-        let g_value = g_hat[(*t as usize) + (*k as usize) * folded_len];
+        let index = (*t as usize) + (*k as usize) * folded_len;
+        let g_value = g_hat[index];
         g_rs.push(SecureField::from_single_m31(g_value))
     }
 
@@ -277,15 +280,23 @@ fn open_merkle_tree<B: BackendForChannel<MC>, MC: MerkleChannel>(
     decommitment
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StirProof<H: MerkleHasher> {
+    pub all_betas: Vec<SecureField>,
+    pub output_roots: Vec<H::Hash>,
+    pub output_branches: Vec<MerkleDecommitment<H>>,
+}
+
 pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
     channel: &mut MC::C,
-    mut coset: Coset,
+    coset: &Coset,
     eval_sizes: Vec<usize>,
     repetition_params: Vec<usize>,
     folding_params: Vec<usize>,
     values: &Vec<BaseField>,
     eval_offsets: &Vec<CirclePointIndex>,
-) -> Result<(), String> {
+) -> Result<StirProof<MC::H>, String> {
+    let mut coset = coset.clone();
     let ood_rep = 1;
     let mut output_roots = vec![];
     let mut all_betas = vec![];
@@ -456,6 +467,82 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
 
     output_branches.push(decommitment);
 
+    Ok(StirProof {
+        all_betas,
+        output_roots,
+        output_branches,
+    })
+}
+
+#[allow(unused_mut)]
+pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
+    channel: &mut MC::C,
+    proof: StirProof<MC::H>,
+    coset: &Coset,
+    eval_sizes: Vec<usize>,
+    repetition_params: Vec<usize>,
+    folding_params: Vec<usize>,
+    eval_offsets: &Vec<CirclePointIndex>,
+) -> Result<(), String> {
+    let mut output_roots = proof.output_roots;
+    let mut output_branches = proof.output_branches;
+    let mut all_betas = proof.all_betas;
+
+    if folding_params.len() != eval_offsets.len()
+        || folding_params.len() != eval_sizes.len()
+        || folding_params.len() != repetition_params.len()
+    {
+        return Err("folding_params.len() != eval_offsets.len() || folding_params.len() != eval_sizes.len() || folding_params.len() != repetition_params.len()".to_owned());
+    }
+
+    let coset = coset.clone();
+
+    if coset.repeated_double(eval_sizes[0].ilog2()).initial_index != CirclePointIndex(0) {
+        return Err(
+            "coset.repeated_double(eval_sizes[0].ilog2()).initial_index != CirclePointIndex(0) "
+                .to_owned(),
+        );
+    }
+
+    // TODO fix self.modulus - 1
+    // assert f.exp(rt,self.eval_sizes[0]//2) == Gaussian(self.modulus - 1,0)
+    if coset
+        .repeated_double((eval_sizes[0] / 2).ilog2())
+        .initial_index
+        != CirclePointIndex(0)
+    {
+        return Err(
+            "coset.repeated_double(eval_sizes[0] / 2).initial_index != CirclePointIndex(0) "
+                .to_owned(),
+        );
+    }
+
+    MC::mix_root(channel, output_roots.pop().unwrap());
+    let rnd = channel.draw_felt();
+    let mut r_fold = M31_CIRCLE_GEN.mul(rnd.0 .0 .0.into());
+
+    for i in 1..folding_params.len() {
+        if eval_sizes[i - 1] % folding_params[i - 1] != 0 {
+            return Err("eval_sizes[i-1] % folding_params[i-1] != 0".to_owned());
+        }
+
+        let folded_len = eval_sizes[i - 1] / folding_params[i - 1];
+        if eval_sizes[i] % folded_len != 0 {
+            return Err("eval_sizes[i] % folded_len != 0".to_owned());
+        }
+        let expand_factor = eval_sizes[i] / folded_len;
+        if eval_sizes[i - 1] % eval_sizes[i] != 0 {
+            return Err("eval_sizes[i-1] % eval_sizes[i] != 0".to_owned());
+        }
+        let eval_size_scale = eval_sizes[i - 1] / eval_sizes[i];
+
+        let coset_new = coset.repeated_double(eval_size_scale.ilog2());
+        let coset2 = coset_new.repeated_double(expand_factor.ilog2());
+        let p_offset = eval_offsets[i - 1] * folding_params[i - 1];
+
+        //     m2_root = proof[proof_pos:proof_pos + 32]
+        //     proof_pos += 32
+    }
     Ok(())
 }
 
@@ -824,8 +911,8 @@ impl CirclePoint<BaseField> {
 #[cfg(test)]
 mod tests {
     use super::{
-        calculate_g_hat, calculate_xs, calculate_xs2s, circ_lagrange_interp, line, shift_g_hat,
-        AllConjugate,
+        calculate_g_hat, calculate_rs_and_g_rs, calculate_xs, calculate_xs2s, circ_lagrange_interp,
+        line, shift_g_hat, AllConjugate,
     };
     use crate::core::backend::CpuBackend;
     use crate::core::circle::{CirclePoint, CirclePointIndex};
@@ -1456,6 +1543,53 @@ mod tests {
         let e = poly.eval_at_point(r_out.into());
         println!("{:?}", e);
     }
+
+    #[test]
+    fn test_calculate_rs_and_g_rs() {
+        let log_size = 3;
+        let coset = CanonicCoset::new(log_size).coset();
+        let offset = CirclePointIndex(1);
+        let offset_point = coset.shift(offset);
+        let g_hat = (0..1 << (log_size + 1)).map(|x| M31(x)).collect();
+        let rnds = vec![
+            QM31::from_u32_unchecked(1, 2, 3, 4),
+            QM31::from_u32_unchecked(5, 6, 7, 8),
+            QM31::from_u32_unchecked(9, 10, 11, 12),
+        ];
+        let r_outs: Vec<CirclePoint<SecureField>> = vec![CirclePoint {
+            x: QM31::from_u32_unchecked(72722396, 315516689, 572797515, 1911932623),
+            y: QM31::from_u32_unchecked(1831966960, 72722395, 235551028, 572797512),
+        }];
+
+        // assume that this returns the correct results
+        let betas = get_betas::<CpuBackend, Blake2sMerkleChannel>(&coset, offset, &g_hat, &r_outs);
+
+        let folding_param = 2;
+        let folded_len = 1 << log_size / folding_param;
+        let t_vals: Vec<u32> = vec![22018, 2192, 23030, 13311]
+            .iter()
+            .map(|&t| t % ((2 * folded_len) as u32))
+            .collect();
+        let t_shifts: Vec<u32> = t_vals.iter().map(|&t| (t / 2)).collect();
+        let t_conj: Vec<u32> = t_vals.iter().map(|&t| (t % (2))).collect();
+
+        let expand_factor = 2 as usize;
+        let coset2 = coset.repeated_double(expand_factor.ilog2());
+
+        // override
+        let r_outs: Vec<CirclePoint<SecureField>> = vec![CirclePoint {
+            x: QM31::from_u32_unchecked(72722396, 315516689, 572797515, 1911932623),
+            y: QM31::from_u32_unchecked(1831966960, 72722395, 235551028, 572797512),
+        }];
+
+        // [((1257134414, 567605011), (1327534562, 118934739))]
+        let betas = vec![(QM31::from_u32_unchecked(1257134414, 567605011, 1327534562, 118934739))];
+        let (rs, g_rs) = calculate_rs_and_g_rs(
+            &r_outs, &betas, &t_shifts, &t_conj, &coset2, offset, &g_hat, folded_len,
+        );
+        println!("{:?}", rs);
+        println!("{:?}", g_rs);
+    }
 }
 
 // all_conj
@@ -1463,7 +1597,7 @@ mod tests {
 // circlepoint(basefield)
 // circlepoint(cm31)
 // circlepoint(qm31)
-// get_beta 
+// get_beta
 // eval_at_point
 // calculate r_s & g_s
 // fold
