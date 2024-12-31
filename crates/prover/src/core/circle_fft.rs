@@ -204,9 +204,11 @@ fn calculate_rs_and_g_rs(
 ) -> (Vec<CirclePoint<SecureField>>, Vec<SecureField>) {
     let mut rs = r_outs.to_vec();
     let mut g_rs = betas.to_vec();
+    let p_offset_point = p_offset.to_point();
 
     for (t, k) in t_shifts.iter().zip(t_conj.iter()) {
-        let mut intr = p_offset + (coset.initial_index * (*t as usize));
+        let mut intr = p_offset + (coset.step_size * (*t as usize));
+        let intr_point = intr.to_secure_field_point();
 
         // let rt2_exp = coset.repeated_double(t.ilog2()); // This might be wrong? we may need a
         // coset function that handles for custom multiplication? let mut intr:
@@ -368,7 +370,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
         let m2: MerkleProver<B, MC::H> = MerkleProver::commit(vec![&g_hat_shift.values]);
         output_roots.push(m2.root());
 
-        MC::mix_root(channel, merkle_tree.root());
+        MC::mix_root(channel, m2.root());
 
         xs = calculate_xs(&coset, eval_offsets[i]);
 
@@ -484,6 +486,7 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
     folding_params: Vec<usize>,
     eval_offsets: &Vec<CirclePointIndex>,
 ) -> Result<(), String> {
+    let ood_rep = 1;
     let mut output_roots = proof.output_roots;
     let mut output_branches = proof.output_branches;
     let mut all_betas = proof.all_betas;
@@ -509,7 +512,7 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
     if coset
         .repeated_double((eval_sizes[0] / 2).ilog2())
         .initial_index
-        != CirclePointIndex(0)
+        != CirclePointIndex((P as usize + 1) / 2)
     {
         return Err(
             "coset.repeated_double(eval_sizes[0] / 2).initial_index != CirclePointIndex(0) "
@@ -517,7 +520,7 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
         );
     }
 
-    MC::mix_root(channel, output_roots.pop().unwrap());
+    MC::mix_root(channel, output_roots.remove(0));
     let rnd = channel.draw_felt();
     let mut r_fold = M31_CIRCLE_GEN.mul(rnd.0 .0 .0.into());
 
@@ -540,8 +543,59 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
         let coset2 = coset_new.repeated_double(expand_factor.ilog2());
         let p_offset = eval_offsets[i - 1] * folding_params[i - 1];
 
-        //     m2_root = proof[proof_pos:proof_pos + 32]
-        //     proof_pos += 32
+        let m2_root = output_roots.remove(0);
+
+        MC::mix_root(channel, m2_root);
+
+        let r_outs: Vec<CirclePoint<SecureField>> = channel
+            .draw_felts(ood_rep)
+            .iter()
+            .map(|v| (*v).into())
+            .collect();
+        let betas = all_betas.split_off(ood_rep);
+
+        channel.mix_felts(&betas);
+
+        let r_comb;
+        let t_vals;
+        let t_shifts;
+        let t_conj;
+        (r_fold, r_comb, t_vals, t_shifts, t_conj) =
+            generate_rnd_r_t_values::<MC>(channel, folded_len, repetition_params[i - 1]);
+
+        // let (rs, g_rs) = calculate_rs_and_g_rs(
+        //     &r_outs, &betas, &t_shifts, &t_conj, &coset2, p_offset, &g_hat, folded_len,
+        // );
+        // r_fold_new = f.exp(self.prim_root, get_pseudorandom_indices(proof[:proof_pos],
+        // self.modulus+1, 1)[0]) r_comb_new = f.exp(self.prim_root,
+        // get_pseudorandom_indices(proof[:proof_pos], self.modulus+1, 1, start=1)[0])
+        // t_vals = get_pseudorandom_indices(proof[:proof_pos], 2*folded_len,
+        // self.repetition_params[i-1], start = 2) t_shifts = [t//2 for t in t_vals]
+        // t_conj = [t%2 for t in t_vals]
+        // rs_new = r_outs + [f.mul(p_offset,f.exp(rt2, t)).conj(k)%self.modulus for (t,k) in
+        // zip(t_shifts,t_conj)]
+
+        let temp_coset2 = coset.repeated_double(folded_len.ilog2());
+        let xs2s = calculate_xs2s(temp_coset2, folding_params[i - 1]);
+
+        // let mut g_hat = vec![];
+        // for k in 0..repetition_params[i - 1] {
+        //     let mut vals = vec![];
+
+        //     let intm = coset.initial_index * (t_shifts[k] as usize);
+        //     let mut intr = eval_offsets[i - 1];
+        //     if t_conj[k] % 2 != 0 {
+        //         intr = intr.conj();
+        //     }
+        //     let x0 = intm + intr; // self.eval_offsets[i-1]).conj(t_conj[k])
+
+        //     for j in 0..folding_params[i - 1] {
+
+        //     }
+
+        //     // g_hat.append(f.eval_circ_poly_at(f.circ_lagrange_interp(xs2s[t_conj[k]], vals,
+        //     // normalize=True), f.mul(r_fold, x0.conj())))
+        // }
     }
     Ok(())
 }
@@ -1216,22 +1270,17 @@ mod tests {
             QM31::from_u32_unchecked(5, 6, 7, 8),
             QM31::from_u32_unchecked(9, 10, 11, 12),
         ];
-        // let r_outs: Vec<CirclePoint<SecureField>> = rnds.iter().map(|v| (*v).into()).collect();
-        // // this could be wrong?? println!("{:?}", r_outs);
-
-        // let xxxxx = QM31::from_u32_unchecked(1, 2, 3, 4);
-        // let yyyyy: CirclePoint<SecureField> = xxxxx.into();
-        // println!("{:?}", yyyyy);
-
-        // (((72722396, 315516689), (572797515, 1911932623)), ((1831966960, 72722395), (235551028,
-        // 572797512)))
-        let r_outs: Vec<CirclePoint<SecureField>> = vec![CirclePoint {
-            x: QM31::from_u32_unchecked(72722396, 315516689, 572797515, 1911932623),
-            y: QM31::from_u32_unchecked(1831966960, 72722395, 235551028, 572797512),
-        }];
+        let r_outs: Vec<CirclePoint<SecureField>> = rnds.iter().map(|v| (*v).into()).collect();
 
         let betas = get_betas::<CpuBackend, Blake2sMerkleChannel>(&coset, offset, &g_hat, &r_outs);
-        println!("{:?}", betas);
+        assert_eq!(
+            betas,
+            vec![
+                QM31::from_u32_unchecked(799613285, 1453257741, 306968076, 279669434),
+                QM31::from_u32_unchecked(662569600, 1309524809, 1697706249, 367732368),
+                QM31::from_u32_unchecked(2124331326, 1634894783, 476658639, 1417229679)
+            ]
+        );
     }
 
     #[test]
@@ -1511,13 +1560,11 @@ mod tests {
 
     // circ_poly_to_int_poly
 
+    // TODO: to remove this test, tested to be correct
     #[test]
     fn test_eval_at_point_secure_field() {
-        let r_out: CirclePoint<SecureField> = CirclePoint {
-            x: QM31::from_u32_unchecked(72722396, 315516689, 572797515, 1911932623),
-            y: QM31::from_u32_unchecked(1831966960, 72722395, 235551028, 572797512),
-        };
-
+        let rnd_point = QM31::from_u32_unchecked(1, 2, 3, 4);
+        let r_out: CirclePoint<SecureField> = rnd_point.into();
         // poly = [1073741831, 0, 142172079, 0, 1031667956, 0, 1966318798, 0, 1429038289, 0,
         // 251819275, 0, 1173966850, 0, 772153390, 613376015]
 
@@ -1542,6 +1589,7 @@ mod tests {
 
         let e = poly.eval_at_point(r_out.into());
         println!("{:?}", e);
+        // ((1257134414, 567605011), (1327534562, 118934739))
     }
 
     #[test]
@@ -1556,12 +1604,7 @@ mod tests {
             QM31::from_u32_unchecked(5, 6, 7, 8),
             QM31::from_u32_unchecked(9, 10, 11, 12),
         ];
-        let r_outs: Vec<CirclePoint<SecureField>> = vec![CirclePoint {
-            x: QM31::from_u32_unchecked(72722396, 315516689, 572797515, 1911932623),
-            y: QM31::from_u32_unchecked(1831966960, 72722395, 235551028, 572797512),
-        }];
-
-        // assume that this returns the correct results
+        let r_outs: Vec<CirclePoint<SecureField>> = rnds.iter().map(|v| (*v).into()).collect();
         let betas = get_betas::<CpuBackend, Blake2sMerkleChannel>(&coset, offset, &g_hat, &r_outs);
 
         let folding_param = 2;
@@ -1575,20 +1618,58 @@ mod tests {
 
         let expand_factor = 2 as usize;
         let coset2 = coset.repeated_double(expand_factor.ilog2());
+        let offset_point2 = coset2.shift(offset).initial;
 
-        // override
-        let r_outs: Vec<CirclePoint<SecureField>> = vec![CirclePoint {
-            x: QM31::from_u32_unchecked(72722396, 315516689, 572797515, 1911932623),
-            y: QM31::from_u32_unchecked(1831966960, 72722395, 235551028, 572797512),
-        }];
-
-        // [((1257134414, 567605011), (1327534562, 118934739))]
-        let betas = vec![(QM31::from_u32_unchecked(1257134414, 567605011, 1327534562, 118934739))];
         let (rs, g_rs) = calculate_rs_and_g_rs(
             &r_outs, &betas, &t_shifts, &t_conj, &coset2, offset, &g_hat, folded_len,
         );
-        println!("{:?}", rs);
-        println!("{:?}", g_rs);
+
+        assert_eq!(
+            rs,
+            vec![
+                CirclePoint::<SecureField> {
+                    x: QM31::from_u32_unchecked(2001365350, 428420505, 1868078972, 2005504680),
+                    y: QM31::from_u32_unchecked(1719063144, 2001365349, 141978971, 1868078969),
+                },
+                CirclePoint::<SecureField> {
+                    x: QM31::from_u32_unchecked(1894965280, 1720927558, 1413715516, 1452232956),
+                    y: QM31::from_u32_unchecked(426556095, 1894965275, 695250699, 1413715509),
+                },
+                CirclePoint::<SecureField> {
+                    x: QM31::from_u32_unchecked(1462087839, 2027728257, 1661132873, 884790667),
+                    y: QM31::from_u32_unchecked(119755400, 1462087830, 1262692992, 1661132862),
+                },
+                CirclePoint::<SecureField> {
+                    x: QM31::from_single_m31(M31(1268011823)),
+                    y: QM31::from_single_m31(M31(2147483645)),
+                },
+                CirclePoint::<SecureField> {
+                    x: QM31::from_single_m31(M31(2)),
+                    y: QM31::from_single_m31(M31(1268011823)),
+                },
+                CirclePoint::<SecureField> {
+                    x: QM31::from_single_m31(M31(1268011823)),
+                    y: QM31::from_single_m31(M31(2147483645)),
+                },
+                CirclePoint::<SecureField> {
+                    x: QM31::from_single_m31(M31(1268011823)),
+                    y: QM31::from_single_m31(M31(2)),
+                },
+            ]
+        );
+
+        assert_eq!(
+            g_rs,
+            vec![
+                QM31::from_u32_unchecked(799613285, 1453257741, 306968076, 279669434),
+                QM31::from_u32_unchecked(662569600, 1309524809, 1697706249, 367732368),
+                QM31::from_u32_unchecked(2124331326, 1634894783, 476658639, 1417229679),
+                QM31::from_single_m31(M31(1)),
+                QM31::from_single_m31(M31(0)),
+                QM31::from_single_m31(M31(1)),
+                QM31::from_single_m31(M31(3))
+            ]
+        );
     }
 }
 
@@ -1597,7 +1678,4 @@ mod tests {
 // circlepoint(basefield)
 // circlepoint(cm31)
 // circlepoint(qm31)
-// get_beta
-// eval_at_point
-// calculate r_s & g_s
 // fold

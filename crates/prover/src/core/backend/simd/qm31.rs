@@ -311,6 +311,11 @@ impl From<QM31> for CirclePoint<QM31> {
     }
 }
 
+// def line_to_circ(a): 
+//     a_inv = a.inv()
+//     half = inv(2,a._modulus())
+//     return Gaussian((a + a_inv)*half, (a_inv - a)*CM(0,half,a._modulus()))
+
 #[cfg(test)]
 mod tests {
     use std::array;
