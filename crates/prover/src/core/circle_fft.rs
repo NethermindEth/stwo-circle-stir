@@ -95,13 +95,9 @@ fn shift_g_hat<B: BackendForChannel<MC>, MC: MerkleChannel>(
     p_offset: CirclePointIndex,
     eval_offset: CirclePointIndex,
 ) -> CircleEvaluation<B, BaseField, NaturalOrder> {
-    let poly = interpolate::<B, MC>(
-        &coset.repeated_double(expand_factor.ilog2()),
-        p_offset,
-        g_hat,
-    );
-    let shifted_domain = CircleDomain::new(coset.shift(eval_offset));
-    let g_hat_shift = poly.evaluate(shifted_domain).bit_reverse();
+    let interpolate_coset = coset.repeated_double(expand_factor.ilog2());
+    let poly = interpolate::<B, MC>(&interpolate_coset, p_offset, g_hat);
+    let g_hat_shift = evaluate::<B, MC>(poly, &coset, eval_offset);
 
     g_hat_shift
 }
@@ -160,7 +156,8 @@ fn interpolate<B: BackendForChannel<MC>, MC: MerkleChannel>(
     to_shift: CirclePointIndex,
     eval: &Vec<BaseField>,
 ) -> CirclePoly<B> {
-    let domain = CircleDomain::new(coset.shift(to_shift));
+    let shift_size = coset.shift(-to_shift).conjugate().initial_index;
+    let domain = CircleDomain::new(coset.shift(shift_size));
     let evaluation = CircleEvaluation::<B, BaseField, NaturalOrder>::new(
         domain,
         eval.iter().map(|x| *x).collect(),
@@ -170,6 +167,18 @@ fn interpolate<B: BackendForChannel<MC>, MC: MerkleChannel>(
     poly
 }
 
+fn evaluate<B: BackendForChannel<MC>, MC: MerkleChannel>(
+    poly: CirclePoly<B>,
+    coset: &Coset,
+    offset: CirclePointIndex,
+) -> CircleEvaluation<B, M31, NaturalOrder> {
+    let to_shift = coset.shift(-offset).conjugate().initial_index;
+    let domain = CircleDomain::new(coset.shift(to_shift));
+    let evals = poly.evaluate(domain).bit_reverse();
+
+    evals
+}
+
 fn get_betas<B: BackendForChannel<MC>, MC: MerkleChannel>(
     coset: &Coset,
     p_offset: CirclePointIndex,
@@ -177,11 +186,6 @@ fn get_betas<B: BackendForChannel<MC>, MC: MerkleChannel>(
     r_outs: &Vec<CirclePoint<SecureField>>,
 ) -> Vec<SecureField> {
     let poly = interpolate::<B, MC>(coset, p_offset, g_hat);
-
-    for r in r_outs.iter() {
-        let e = poly.eval_at_point((*r).into());
-        println!("{:?}", e);
-    }
 
     // TODO: to check correctness of this betas result
     let betas: Vec<SecureField> = r_outs
@@ -204,7 +208,6 @@ fn calculate_rs_and_g_rs(
 ) -> (Vec<CirclePoint<SecureField>>, Vec<SecureField>) {
     let mut rs = r_outs.to_vec();
     let mut g_rs = betas.to_vec();
-    let p_offset_point = p_offset.to_point();
 
     for (t, k) in t_shifts.iter().zip(t_conj.iter()) {
         let mut intr = p_offset + (coset.step_size * (*t as usize));
@@ -966,19 +969,20 @@ impl CirclePoint<BaseField> {
 mod tests {
     use super::{
         calculate_g_hat, calculate_rs_and_g_rs, calculate_xs, calculate_xs2s, circ_lagrange_interp,
-        line, shift_g_hat, AllConjugate,
+        fold_val, line, AllConjugate,
     };
     use crate::core::backend::CpuBackend;
     use crate::core::circle::{CirclePoint, CirclePointIndex};
     use crate::core::circle_fft::{
-        add_circ_polys, add_polys, circ_zpoly, eval_circ_poly_at, eval_poly_at, get_betas,
-        interpolate, mul_circ_by_const, mul_circ_polys, mul_polys, sub_circ_polys, sub_polys, Conj,
+        add_circ_polys, add_polys, circ_zpoly, eval_circ_poly_at, eval_poly_at, evaluate,
+        get_betas, interpolate, mul_circ_by_const, mul_circ_polys, mul_polys, shift_g_hat,
+        sub_circ_polys, sub_polys, Conj,
     };
     use crate::core::fields::cm31::CM31;
     use crate::core::fields::m31::{BaseField, M31};
     use crate::core::fields::qm31::{SecureField, QM31};
     use crate::core::pcs::PcsConfig;
-    use crate::core::poly::circle::{CanonicCoset, CircleDomain, CirclePoly};
+    use crate::core::poly::circle::{CanonicCoset, CirclePoly};
     use crate::core::vcs::blake2_merkle::Blake2sMerkleChannel;
 
     #[test]
@@ -1049,7 +1053,6 @@ mod tests {
                 }
             ]
         );
-        println!("{:?}", xs2s);
     }
 
     #[test]
@@ -1149,8 +1152,6 @@ mod tests {
                 }
             ]
         );
-
-        println!("{:?}", xs_points);
     }
 
     #[test]
@@ -1197,17 +1198,13 @@ mod tests {
     fn test_shift_g_hat() {
         let log_size = 3;
         let expand_factor = 2;
-        let eval_size = 1 << log_size + 1; // because the canonic coset uses half coset hence we need to double the eval_size
+        let eval_size: i32 = 1 << log_size + 1; // because the canonic coset uses half coset hence we need to double the eval_size
         let coset = CanonicCoset::new(log_size + (expand_factor as usize).ilog2()).coset;
         let vals: Vec<M31> = (0..eval_size).map(|x| BaseField::from(x)).collect();
         let p_offset = CirclePointIndex(1);
+        let p_offset_point = p_offset.to_point();
         let eval_offset = CirclePointIndex(2);
-        // offset_points are used to print out the CirclePoint values to input it to our python
-        // implementation for testing
-        let eval_offset_point = coset.shift(eval_offset);
-        let p_offset_point = coset
-            .repeated_double((expand_factor as usize).ilog2())
-            .shift(p_offset);
+        let eval_offset_point = eval_offset.to_point();
 
         let g_hat_shift = shift_g_hat::<CpuBackend, Blake2sMerkleChannel>(
             &vals,
@@ -1220,42 +1217,40 @@ mod tests {
         assert_eq!(
             g_hat_shift.values,
             vec![
-                M31(1613244122),
-                M31(1222128567),
-                M31(1459611888),
-                M31(888544057),
-                M31(802115697),
-                M31(731278093),
-                M31(751618954),
-                M31(2031708490),
-                M31(731490323),
-                M31(1739438338),
-                M31(28440601),
-                M31(1484914107),
-                M31(1897995022),
-                M31(1974300165),
-                M31(1271701725),
-                M31(698822794),
-                M31(1621673201),
-                M31(1213699488),
-                M31(1468040967),
-                M31(880114978),
-                M31(810544776),
-                M31(722849014),
-                M31(760048033),
-                M31(2023279411),
-                M31(739919402),
-                M31(1731009259),
-                M31(36869680),
-                M31(1476485028),
-                M31(1906424101),
-                M31(1965871086),
-                M31(1280130804),
-                M31(690393715),
+                M31(1202987316),
+                M31(1994628606),
+                M31(62953673),
+                M31(1676200487),
+                M31(1232855071),
+                M31(1541252791),
+                M31(649945473),
+                M31(179108572),
+                M31(611770365),
+                M31(224890177),
+                M31(509951501),
+                M31(945953568),
+                M31(1113918000),
+                M31(2115474593),
+                M31(1056865314),
+                M31(2061113789),
+                M31(1203288388),
+                M31(1994327534),
+                M31(63254745),
+                M31(1675899415),
+                M31(1233156143),
+                M31(1540951719),
+                M31(650246545),
+                M31(178807500),
+                M31(612071437),
+                M31(224589105),
+                M31(510252573),
+                M31(945652496),
+                M31(1114219072),
+                M31(2115173521),
+                M31(1057166386),
+                M31(2060812717),
             ]
         );
-
-        println!("{:?}", g_hat_shift);
     }
 
     #[test]
@@ -1263,7 +1258,7 @@ mod tests {
         let log_size = 3;
         let coset = CanonicCoset::new(log_size).coset();
         let offset = CirclePointIndex(1);
-        let offset_point = coset.shift(offset);
+        let offset_point = offset.to_point();
         let g_hat = (0..1 << (log_size + 1)).map(|x| M31(x)).collect();
         let rnds = vec![
             QM31::from_u32_unchecked(1, 2, 3, 4),
@@ -1273,14 +1268,17 @@ mod tests {
         let r_outs: Vec<CirclePoint<SecureField>> = rnds.iter().map(|v| (*v).into()).collect();
 
         let betas = get_betas::<CpuBackend, Blake2sMerkleChannel>(&coset, offset, &g_hat, &r_outs);
+        // [((1743753900, 1717223839), (1032320333, 1015200802)), ((1260623339, 1950301647),
+        // (805251682, 956842345)), ((878227697, 639636854), (811147145, 1122453360))]
+
         assert_eq!(
             betas,
             vec![
-                QM31::from_u32_unchecked(799613285, 1453257741, 306968076, 279669434),
-                QM31::from_u32_unchecked(662569600, 1309524809, 1697706249, 367732368),
-                QM31::from_u32_unchecked(2124331326, 1634894783, 476658639, 1417229679)
+                QM31::from_u32_unchecked(1743753900, 1717223839, 1032320333, 1015200802),
+                QM31::from_u32_unchecked(1260623339, 1950301647, 805251682, 956842345),
+                QM31::from_u32_unchecked(878227697, 639636854, 811147145, 1122453360)
             ]
-        );
+        )
     }
 
     #[test]
@@ -1501,15 +1499,11 @@ mod tests {
         assert_eq!(res, [vec![M31(2), M31(2147483632)], vec![M31(463810318)]]);
     }
 
-    // when you have the coset, take the first point of the coset, v
-    // offset - v
-    // (7,77707....) - (1179735656, 1241207368)
     #[test]
     fn test_fft_ifft_with_offset() {
         let poly_log_length = 4;
         let offset: CirclePointIndex = CirclePointIndex(2);
         let offset_point = offset.to_point();
-        println!("{:?}", offset_point);
         let coset = CanonicCoset::new(poly_log_length).coset;
         let values: Vec<M31> = (0..1 << (poly_log_length + 1)).map(|x| M31(x)).collect();
         let poly = interpolate::<CpuBackend, Blake2sMerkleChannel>(&coset, offset, &values);
@@ -1520,44 +1514,42 @@ mod tests {
             [
                 M31(1073741839),
                 M31(0),
-                M31(1498069892),
+                M31(1529805092),
                 M31(0),
-                M31(269407359),
+                M31(1391306209),
                 M31(0),
-                M31(2026037040),
+                M31(1915085074),
                 M31(0),
-                M31(1915079382),
+                M31(1631102365),
                 M31(0),
-                M31(34710855),
+                M31(550574923),
                 M31(0),
-                M31(958049463),
+                M31(768417018),
                 M31(0),
-                M31(2103180470),
+                M31(1061520795),
                 M31(0),
-                M31(1218381196),
+                M31(683740790),
                 M31(0),
-                M31(1595441113),
+                M31(1545654070),
                 M31(0),
-                M31(1167370379),
+                M31(681605261),
                 M31(0),
-                M31(1194789249),
+                M31(492787859),
                 M31(0),
-                M31(1348073476),
+                M31(822270530),
                 M31(0),
-                M31(1717137709),
+                M31(1539733550),
                 M31(0),
-                M31(681422734),
+                M31(1700331639),
                 M31(0),
-                M31(981687288),
-                M31(1164983970)
+                M31(1375452669),
+                M31(982499677)
             ]
         );
 
-        let domain = CircleDomain::new(coset.shift(offset));
-        let evals = poly.evaluate(domain).bit_reverse();
+        let evals = evaluate::<CpuBackend, Blake2sMerkleChannel>(poly, &coset, offset);
         assert_eq!(evals.values, values);
     }
-
     // circ_poly_to_int_poly
 
     // TODO: to remove this test, tested to be correct
@@ -1565,8 +1557,6 @@ mod tests {
     fn test_eval_at_point_secure_field() {
         let rnd_point = QM31::from_u32_unchecked(1, 2, 3, 4);
         let r_out: CirclePoint<SecureField> = rnd_point.into();
-        // poly = [1073741831, 0, 142172079, 0, 1031667956, 0, 1966318798, 0, 1429038289, 0,
-        // 251819275, 0, 1173966850, 0, 772153390, 613376015]
 
         let poly = CirclePoly::<CpuBackend>::new(vec![
             M31(1073741831),
@@ -1597,7 +1587,7 @@ mod tests {
         let log_size = 3;
         let coset = CanonicCoset::new(log_size).coset();
         let offset = CirclePointIndex(1);
-        let offset_point = coset.shift(offset);
+        let offset_point = offset.to_point();
         let g_hat = (0..1 << (log_size + 1)).map(|x| M31(x)).collect();
         let rnds = vec![
             QM31::from_u32_unchecked(1, 2, 3, 4),
@@ -1661,15 +1651,101 @@ mod tests {
         assert_eq!(
             g_rs,
             vec![
-                QM31::from_u32_unchecked(799613285, 1453257741, 306968076, 279669434),
-                QM31::from_u32_unchecked(662569600, 1309524809, 1697706249, 367732368),
-                QM31::from_u32_unchecked(2124331326, 1634894783, 476658639, 1417229679),
+                QM31::from_u32_unchecked(1743753900, 1717223839, 1032320333, 1015200802),
+                QM31::from_u32_unchecked(1260623339, 1950301647, 805251682, 956842345),
+                QM31::from_u32_unchecked(878227697, 639636854, 811147145, 1122453360),
                 QM31::from_single_m31(M31(1)),
                 QM31::from_single_m31(M31(0)),
                 QM31::from_single_m31(M31(1)),
                 QM31::from_single_m31(M31(3))
             ]
         );
+    }
+
+    #[test]
+    fn test_fold_val() {
+        let log_size = 3;
+        let mut coset = CanonicCoset::new(log_size).coset;
+
+        let ori_eval_size = 1 << log_size;
+        let eval_size = ori_eval_size / 2;
+
+        let ori_eval_offset = CirclePointIndex(1);
+        let ori_eval_offset_point = ori_eval_offset.to_point();
+        let eval_offset = coset.step_size + ori_eval_offset;
+        let eval_offset_point = eval_offset.to_point();
+        let xs = calculate_xs(&coset, ori_eval_offset);
+        let xs_points: Vec<CirclePoint<M31>> = xs.iter().map(|x| x.to_point()).collect();
+
+        let folding_param = 2;
+        let folded_len: usize = ori_eval_size / folding_param;
+        let r_fold = CirclePointIndex(1).to_point(); // random point
+        let mut coset2 = coset.repeated_double(folded_len.ilog2());
+
+        let xs2s = calculate_xs2s(coset2, folding_param);
+        let xs2s_points_0: Vec<CirclePoint<M31>> = xs2s[0].iter().map(|x| x.to_point()).collect();
+        let xs2s_points_1: Vec<CirclePoint<M31>> = xs2s[1].iter().map(|x| x.to_point()).collect();
+
+        let vals: Vec<M31> = (0..2 * ori_eval_size).map(|x| BaseField::from(x)).collect();
+
+        let g_hat = calculate_g_hat(
+            folded_len,
+            folding_param,
+            ori_eval_size,
+            r_fold,
+            &vals,
+            &xs2s,
+            &xs,
+        );
+
+        let eval_size_next = ori_eval_size / 2;
+        let expand_factor = eval_size / folded_len;
+        let eval_size_scale = ori_eval_size / eval_size;
+        coset = coset.repeated_double(eval_size_scale.ilog2());
+        coset2 = coset2.repeated_double(expand_factor.ilog2());
+        let p_offset = ori_eval_offset * folding_param;
+        let p_offset_point = p_offset.to_point();
+
+        let g_hat_shift = shift_g_hat::<CpuBackend, Blake2sMerkleChannel>(
+            &g_hat,
+            coset,
+            expand_factor as usize,
+            p_offset,
+            eval_offset,
+        );
+
+        let rnds = vec![
+            QM31::from_u32_unchecked(1, 2, 3, 4),
+            QM31::from_u32_unchecked(5, 6, 7, 8),
+            QM31::from_u32_unchecked(9, 10, 11, 12),
+        ];
+        let r_outs: Vec<CirclePoint<SecureField>> = rnds.iter().map(|v| (*v).into()).collect();
+
+        let betas =
+            get_betas::<CpuBackend, Blake2sMerkleChannel>(&coset2, p_offset, &g_hat, &r_outs);
+
+        let t_vals: Vec<u32> = vec![22018, 2192, 23030, 13311]
+            .iter()
+            .map(|&t| t % ((2 * folded_len) as u32))
+            .collect();
+        let t_shifts: Vec<u32> = t_vals.iter().map(|&t| (t / 2)).collect();
+        let t_conj: Vec<u32> = t_vals.iter().map(|&t| (t % (2))).collect();
+
+        let (rs, g_rs) = calculate_rs_and_g_rs(
+            &r_outs, &betas, &t_shifts, &t_conj, &coset2, p_offset, &g_hat, folded_len,
+        );
+
+        let folded_vals = fold_val(&rs, &g_rs, &xs, eval_size, r_fold, &g_hat_shift);
+
+        println!("{:?}", folded_vals);
+        // fn fold_val(
+        //     rs: &Vec<CirclePoint<SecureField>>,
+        //     g_rs: &Vec<SecureField>,
+        //     xs: &Vec<CirclePointIndex>,
+        //     eval_size: usize,
+        //     r_comb: CirclePoint<BaseField>,
+        //     g_hat_shift: &Vec<M31>,
+        // ) -> Vec<BaseField> {
     }
 }
 
