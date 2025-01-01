@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::vec;
 
-use itertools::max;
+use itertools::{max, Itertools};
 use num_traits::Zero;
 use serde::{Deserialize, Serialize};
 
@@ -364,7 +364,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
         let expand_factor = eval_sizes[i] / folded_len;
         let eval_size_scale = eval_sizes[i - 1] / eval_sizes[i];
         coset = coset.repeated_double(eval_size_scale.ilog2());
-        coset2 = coset2.repeated_double(expand_factor.ilog2());
+        coset2 = coset.repeated_double(expand_factor.ilog2());
         let p_offset = eval_offsets[i - 1] * folding_params[i - 1];
 
         let g_hat_shift =
@@ -663,6 +663,9 @@ fn eval_poly_at<F: Field>(poly: &Vec<F>, pt: &F) -> F {
     let mut y = F::zero();
     let mut power_of_x = F::one();
 
+    let poly2 = poly.clone();
+    let pt2 = pt.clone();
+
     for coeff in poly.iter() {
         y += power_of_x * *coeff;
         power_of_x = power_of_x * *pt;
@@ -913,6 +916,9 @@ impl AllConjugate for BaseField {
 impl AllConjugate for CM31 {
     fn all_conj(&self) -> Vec<Self> {
         vec![*self, self.complex_conjugate()]
+            .into_iter()
+            .unique()
+            .collect()
     }
 }
 
@@ -922,7 +928,8 @@ impl AllConjugate for QM31 {
         let mut conj_2: Vec<QM31> = conj.iter().map(|c| c.pow(P.into())).collect();
 
         conj.append(&mut conj_2);
-        conj
+
+        conj.into_iter().unique().collect()
     }
 }
 
@@ -940,6 +947,7 @@ impl AllConjugate for CirclePoint<CM31> {
         x.iter()
             .zip(y.iter())
             .map(|(x, y)| CirclePoint { x: *x, y: *y })
+            .unique()
             .collect()
     }
 }
@@ -952,6 +960,7 @@ impl AllConjugate for CirclePoint<QM31> {
         x.iter()
             .zip(y.iter())
             .map(|(x, y)| CirclePoint { x: *x, y: *y })
+            .unique()
             .collect()
     }
 }
@@ -1664,10 +1673,10 @@ mod tests {
 
     #[test]
     fn test_fold_val() {
-        let log_size = 3;
-        let mut coset = CanonicCoset::new(log_size).coset;
+        let log_size = 4;
+        let mut coset = CanonicCoset::new(log_size + 2).coset;
 
-        let ori_eval_size = 1 << log_size;
+        let ori_eval_size = 1 << (log_size + 2);
         let eval_size = ori_eval_size / 2;
 
         let ori_eval_offset = CirclePointIndex(1);
@@ -1677,7 +1686,7 @@ mod tests {
         let xs = calculate_xs(&coset, ori_eval_offset);
         let xs_points: Vec<CirclePoint<M31>> = xs.iter().map(|x| x.to_point()).collect();
 
-        let folding_param = 2;
+        let folding_param = 4;
         let folded_len: usize = ori_eval_size / folding_param;
         let r_fold = CirclePointIndex(1).to_point(); // random point
         let mut coset2 = coset.repeated_double(folded_len.ilog2());
@@ -1702,7 +1711,8 @@ mod tests {
         let expand_factor = eval_size / folded_len;
         let eval_size_scale = ori_eval_size / eval_size;
         coset = coset.repeated_double(eval_size_scale.ilog2());
-        coset2 = coset2.repeated_double(expand_factor.ilog2());
+        let expand_factor_log = expand_factor.ilog2();
+        coset2 = coset.repeated_double(expand_factor.ilog2());
         let p_offset = ori_eval_offset * folding_param;
         let p_offset_point = p_offset.to_point();
 
@@ -1735,17 +1745,82 @@ mod tests {
             &r_outs, &betas, &t_shifts, &t_conj, &coset2, p_offset, &g_hat, folded_len,
         );
 
+        println!("rs: {:?}", rs);
+        println!("g_rs: {:?}", g_rs);
+
         let folded_vals = fold_val(&rs, &g_rs, &xs, eval_size, r_fold, &g_hat_shift);
 
         println!("{:?}", folded_vals);
-        // fn fold_val(
-        //     rs: &Vec<CirclePoint<SecureField>>,
-        //     g_rs: &Vec<SecureField>,
-        //     xs: &Vec<CirclePointIndex>,
-        //     eval_size: usize,
-        //     r_comb: CirclePoint<BaseField>,
-        //     g_hat_shift: &Vec<M31>,
-        // ) -> Vec<BaseField> {
+
+        assert_eq!(
+            folded_vals,
+            vec![
+                M31(1542920072),
+                M31(757127436),
+                M31(964470750),
+                M31(942787347),
+                M31(507842288),
+                M31(1448015383),
+                M31(1975452888),
+                M31(1470820197),
+                M31(1247357182),
+                M31(1605441066),
+                M31(1157611370),
+                M31(1728126083),
+                M31(2076812931),
+                M31(120685567),
+                M31(73792063),
+                M31(138466685),
+                M31(1408383802),
+                M31(609731456),
+                M31(675050321),
+                M31(1004400754),
+                M31(765051680),
+                M31(1312352009),
+                M31(951846940),
+                M31(98879838),
+                M31(1368445810),
+                M31(1364099675),
+                M31(1383613746),
+                M31(1746577100),
+                M31(659489686),
+                M31(1560286765),
+                M31(183744761),
+                M31(797313211),
+                M31(1094353584),
+                M31(466389699),
+                M31(1206566795),
+                M31(892550422),
+                M31(1610998386),
+                M31(77420654),
+                M31(303493718),
+                M31(765916727),
+                M31(464795491),
+                M31(1923141863),
+                M31(1340187209),
+                M31(596507134),
+                M31(738411156),
+                M31(800066080),
+                M31(1279015926),
+                M31(1465898922),
+                M31(1531866448),
+                M31(417028292),
+                M31(2101977463),
+                M31(547401174),
+                M31(135124960),
+                M31(301905297),
+                M31(2017130685),
+                M31(32449442),
+                M31(1217102802),
+                M31(1410326073),
+                M31(1756599916),
+                M31(1501273479),
+                M31(1783082249),
+                M31(558464741),
+                M31(21028768),
+                M31(641020441)
+            ]
+        )
     }
 }
 
@@ -1754,4 +1829,3 @@ mod tests {
 // circlepoint(basefield)
 // circlepoint(cm31)
 // circlepoint(qm31)
-// fold
