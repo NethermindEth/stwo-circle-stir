@@ -26,8 +26,6 @@ pub struct CircleEvaluation<B: FieldOps<F>, F: ExtensionOf<BaseField>, EvalOrder
 
 impl<B: FieldOps<F>, F: ExtensionOf<BaseField>, EvalOrder> CircleEvaluation<B, F, EvalOrder> {
     pub fn new(domain: CircleDomain, values: Col<B, F>) -> Self {
-        let _domain_size = domain.size();
-        let _values_len = values.len();
         assert_eq!(domain.size(), values.len());
         Self {
             domain,
