@@ -1,7 +1,7 @@
 #![allow(unused_variables)]
 #![allow(unused_assignments)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::vec;
 
 use itertools::{max, Itertools};
@@ -108,8 +108,8 @@ fn generate_rnd_t_values<MC: MerkleChannel>(
     folded_len: usize,
     repetition_param: usize,
 ) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
-    let mut t_vals = vec![];
-    for _ in 0..repetition_param {
+    let mut t_vals_set = HashSet::<u32>::new();
+    while t_vals_set.len() < repetition_param {
         let t_vals_bytes = channel.draw_random_bytes();
         let t_vals_bytes = [
             t_vals_bytes[0],
@@ -118,11 +118,10 @@ fn generate_rnd_t_values<MC: MerkleChannel>(
             t_vals_bytes[3],
         ];
         let t_val = u32::from_be_bytes(t_vals_bytes) % ((2 * folded_len) as u32);
-        t_vals.push(t_val);
-
-        channel.mix_u64(t_val as u64);
+        t_vals_set.insert(t_val);
     }
 
+    let t_vals: Vec<u32> = t_vals_set.iter().cloned().collect();
     let t_shifts: Vec<u32> = t_vals.iter().map(|&t| t / 2).collect();
     let t_conj: Vec<u32> = t_vals.iter().map(|&t| t % 2).collect();
 
@@ -168,7 +167,7 @@ fn interpolate<B: BackendForChannel<MC>, MC: MerkleChannel>(
     poly
 }
 
-fn evaluate<B: BackendForChannel<MC>, MC: MerkleChannel>(
+pub fn evaluate<B: BackendForChannel<MC>, MC: MerkleChannel>(
     poly: CirclePoly<B>,
     coset: &Coset,
     offset: CirclePointIndex,
@@ -261,6 +260,7 @@ fn fold_val(
     r_comb: CirclePoint<BaseField>,
     g_hat_shift: &Vec<M31>,
 ) -> Vec<BaseField> {
+    println!("fold_val\n");
     let pol = circ_lagrange_interp(&rs, &g_rs, false).unwrap();
     let pol_vals: Vec<BaseField> = xs
         .iter()
@@ -304,6 +304,8 @@ fn open_merkle_tree<B: BackendForChannel<MC>, MC: MerkleChannel>(
             queried_index.push(index);
         }
     }
+    queried_index.sort();
+    queried_index.dedup();
 
     let mut queries = BTreeMap::<u32, Vec<usize>>::new();
     queries.insert(merkle_tree_val.len().ilog2(), queried_index.clone());
@@ -416,10 +418,10 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
             .map(|v| (*v).into())
             .collect();
 
-        let mut betas = get_betas::<B, MC>(&coset2, p_offset, &g_hat, &r_outs);
+        let betas = get_betas::<B, MC>(&coset2, p_offset, &g_hat, &r_outs);
 
         channel.mix_felts(&betas);
-        all_betas.append(&mut betas);
+        all_betas.append(&mut betas.clone());
 
         let r_comb;
         let t_vals;
@@ -1027,6 +1029,7 @@ where
             .chain(pts[i + 1..].iter())
             .cloned()
             .collect();
+
         let pol = circ_zpoly(&pts_removed, Some(pts[i]), false);
         let scale = vals[i] / eval_circ_poly_at(&pol, &pts[i]);
         ans = add_circ_polys(&ans, &mul_circ_by_const(&pol, &scale));
@@ -1983,8 +1986,6 @@ mod tests {
         println!("g_rs: {:?}", g_rs);
 
         let folded_vals = fold_val(&rs, &g_rs, &xs, eval_size, r_fold, &g_hat_shift);
-
-        println!("{:?}", folded_vals);
 
         assert_eq!(
             folded_vals,
