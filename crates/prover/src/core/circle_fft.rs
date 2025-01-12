@@ -121,7 +121,8 @@ fn generate_rnd_t_values<MC: MerkleChannel>(
         t_vals_set.insert(t_val);
     }
 
-    let t_vals: Vec<u32> = t_vals_set.iter().cloned().collect();
+    let mut t_vals: Vec<u32> = t_vals_set.iter().cloned().collect();
+    t_vals.sort();
     let t_shifts: Vec<u32> = t_vals.iter().map(|&t| t / 2).collect();
     let t_conj: Vec<u32> = t_vals.iter().map(|&t| t % 2).collect();
 
@@ -141,7 +142,7 @@ fn generate_rnd_r_t_values<MC: MerkleChannel>(
 ) {
     let rnds = channel.draw_felts(2);
     let r_fold = M31_CIRCLE_GEN.mul(rnds[0].0 .0 .0.into());
-    let r_comb = M31_CIRCLE_GEN.mul(rnds[0].0 .0 .0.into());
+    let r_comb = M31_CIRCLE_GEN.mul(rnds[1].0 .0 .0.into());
 
     // mix again to get randomness of the next value
     channel.mix_felts(&rnds);
@@ -260,7 +261,6 @@ fn fold_val(
     r_comb: CirclePoint<BaseField>,
     g_hat_shift: &Vec<M31>,
 ) -> Vec<BaseField> {
-    println!("fold_val\n");
     let pol = circ_lagrange_interp(&rs, &g_rs, false).unwrap();
     let pol_vals: Vec<BaseField> = xs
         .iter()
@@ -323,14 +323,16 @@ pub struct StirProof<H: MerkleHasher> {
     pub opened_indexes: Vec<Vec<usize>>,
     pub opened_values: Vec<Vec<Vec<BaseField>>>,
     pub g_pol_final: Vec<BaseField>,
+    pub merkle_tree_log_sizes: Vec<u32>,
 }
 
 pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
     channel: &mut MC::C,
     coset: &Coset,
-    eval_sizes: Vec<usize>,
-    repetition_params: Vec<usize>,
-    folding_params: Vec<usize>,
+    eval_sizes: &Vec<usize>,
+    max_deg_plus_1: usize,
+    repetition_params: &Vec<usize>,
+    folding_params: &Vec<usize>,
     values: &Vec<BaseField>,
     eval_offsets: &Vec<CirclePointIndex>,
 ) -> Result<StirProof<MC::H>, String> {
@@ -341,6 +343,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
     let mut output_branches = vec![];
     let mut opened_indexes = vec![];
     let mut opened_values = vec![];
+    let mut merkle_tree_log_sizes = vec![];
 
     let mut xs = calculate_xs(&coset, eval_offsets[0]);
 
@@ -353,6 +356,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
     let mut merkle_tree_val = vals.iter().map(|x| *x).collect();
     let mut merkle_tree: MerkleProver<B, MC::H> = MerkleProver::commit(vec![&merkle_tree_val]);
     output_roots.push(merkle_tree.root());
+    merkle_tree_log_sizes.push(merkle_tree_val.len().ilog2());
 
     MC::mix_root(channel, merkle_tree.root());
 
@@ -374,7 +378,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
         folded_len = eval_sizes[i - 1] / folding_params[i - 1];
         let mut coset2 = coset.repeated_double(folded_len.ilog2());
 
-        let xs2s = calculate_xs2s(coset2, folding_params[i]);
+        let xs2s = calculate_xs2s(coset2, folding_params[i - 1]);
 
         g_hat = calculate_g_hat(
             folded_len,
@@ -407,6 +411,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
 
         let m2: MerkleProver<B, MC::H> = MerkleProver::commit(vec![&g_hat_shift.values]);
         output_roots.push(m2.root());
+        merkle_tree_log_sizes.push(g_hat_shift.values.len().ilog2() as u32);
 
         MC::mix_root(channel, m2.root());
 
@@ -467,21 +472,21 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
     let final_folding_param = folding_params[folding_params.len() - 1];
     let to_shift = eval_offsets[eval_offsets.len() - 1] * final_folding_param;
     let g_pol = interpolate::<B, MC>(
-        &coset.repeated_double(final_folding_param as u32),
+        &coset.repeated_double((final_folding_param as u32).ilog2()),
         to_shift,
         &g_hat,
     );
 
-    let numer = values.len(); // maxdeg_plus_1
+    let numer = max_deg_plus_1;
     let denom: usize = folding_params.iter().product();
     let final_deg = numer / denom;
 
     let g_pol_coeffs: Vec<BaseField> = g_pol.coeffs.to_cpu();
-    let (_, g_pol_final) = g_pol_coeffs.split_at(2 * final_deg + 1);
+    let (g_pol_final, g_pol_zeroes) = g_pol_coeffs.split_at(2 * final_deg + 1);
 
-    let is_zero = g_pol_final.iter().all(|x| *x == BaseField::zero());
-    if is_zero {
-        return Err("g_pol_final is zero. something is not right".to_string());
+    let is_zero = g_pol_zeroes.iter().all(|x| *x == BaseField::zero());
+    if !is_zero {
+        return Err("g_pol_final is not zero. something is not right".to_string());
     }
 
     let g_pol_final_secure: Vec<QM31> = g_pol_final
@@ -513,6 +518,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
     Ok(StirProof {
         all_betas,
         output_roots,
+        merkle_tree_log_sizes,
         output_branches,
         opened_indexes,
         opened_values,
@@ -525,9 +531,9 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
     channel: &mut MC::C,
     proof: StirProof<MC::H>,
     coset: &Coset,
-    eval_sizes: Vec<usize>,
-    repetition_params: Vec<usize>,
-    folding_params: Vec<usize>,
+    eval_sizes: &Vec<usize>,
+    repetition_params: &Vec<usize>,
+    folding_params: &Vec<usize>,
     eval_offsets: &Vec<CirclePointIndex>,
     log_size: usize,
 ) -> Result<(), String> {
@@ -536,6 +542,7 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
     let mut opened_values = proof.opened_values;
     let mut output_roots = proof.output_roots;
     let mut output_branches = proof.output_branches;
+    let mut merkle_tree_log_sizes = proof.merkle_tree_log_sizes;
     let mut all_betas = proof.all_betas;
     let mut log_size = log_size;
     let maxdeg_plus_1 = 1 << log_size;
@@ -549,18 +556,16 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
 
     let mut coset = coset.clone();
 
-    if coset.repeated_double(eval_sizes[0].ilog2()).initial_index != CirclePointIndex(0) {
+    if coset.repeated_double(eval_sizes[0].ilog2()).step_size != CirclePointIndex(0) {
         return Err(
-            "coset.repeated_double(eval_sizes[0].ilog2()).initial_index != CirclePointIndex(0) "
+            "coset.repeated_double(eval_sizes[0].ilog2()).step_size != CirclePointIndex(0) "
                 .to_owned(),
         );
     }
 
     // TODO fix self.modulus - 1
     // assert f.exp(rt,self.eval_sizes[0]//2) == Gaussian(self.modulus - 1,0)
-    if coset
-        .repeated_double((eval_sizes[0] / 2).ilog2())
-        .initial_index
+    if coset.repeated_double((eval_sizes[0] / 2).ilog2()).step_size
         != CirclePointIndex((P as usize + 1) / 2)
     {
         return Err(
@@ -607,7 +612,9 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
             .iter()
             .map(|v| (*v).into())
             .collect();
-        let betas = all_betas.split_off(ood_rep);
+        let temp_betas = all_betas.split_off(ood_rep);
+        let betas = all_betas;
+        all_betas = temp_betas;
 
         channel.mix_felts(&betas);
 
@@ -619,48 +626,47 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
         (r_fold_new, r_comb_new, t_vals, t_shifts, t_conj) =
             generate_rnd_r_t_values::<MC>(channel, folded_len, repetition_params[i - 1]);
 
-        let rs_new = calculate_rs(&r_outs, &t_shifts, &t_conj, &coset, p_offset);
+        let rs_new = calculate_rs(&r_outs, &t_shifts, &t_conj, &coset2, p_offset);
 
         let temp_coset2 = coset.repeated_double(folded_len.ilog2());
         let xs2s = calculate_xs2s(temp_coset2, folding_params[i - 1]);
 
+        let output_branch = output_branches.remove(0);
+        let indexes = opened_indexes.remove(0);
+        let values = opened_values.remove(0);
+        let merkle_tree_log_size = merkle_tree_log_sizes.remove(0);
+
+        let verifier = MerkleVerifier::<MC::H> {
+            root: m_root,
+            column_log_sizes: vec![merkle_tree_log_size as u32],
+        };
+
+        let mut queries = BTreeMap::<u32, Vec<usize>>::new();
+        queries.insert(merkle_tree_log_size, indexes);
+
+        let verify_res = verifier.verify(queries, values.clone(), output_branch.clone());
+        if !verify_res.is_ok() {
+            return Err("!verify_res.is_ok()".to_owned());
+        }
+
+        let mut vals = &values[0];
+
         let mut g_hat = vec![];
-        for k in 0..repetition_params[i - 1] {
+
+        for (k, val) in (0..repetition_params[i - 1]).zip(vals.chunks(folding_params[i - 1])) {
             let intr = coset.step_size * (t_shifts[k] as usize);
             let mut intr2 = eval_offsets[i - 1];
             if k % 2 == 0 {
                 intr2 = intr2.conj();
             }
 
-            let x0 = intr + intr2;
+            let x0: CirclePointIndex = intr + intr2;
 
-            let root = output_roots.remove(0);
-            let indexes = opened_indexes.remove(0);
-            let values = opened_values.remove(0);
-            let output_branch = output_branches.remove(0);
-
-            let verifier = MerkleVerifier::<MC::H> {
-                root,
-                column_log_sizes: vec![log_size as u32],
-            };
-
-            let mut queries = BTreeMap::<u32, Vec<usize>>::new();
-            queries.insert(log_size as u32, indexes);
-
-            let verify_res = verifier.verify(queries, values.clone(), output_branch);
-            if !verify_res.is_ok() {
-                return Err("verify_res.is_ok()".to_owned());
-            }
-
-            let mut vals = &values[0];
-
-            // TODO: requires checking and testing
-            // code is ugly, to refactors
-            let mut v = vec![];
+            let mut v_s = vec![];
             if i != 1 {
-                for j in 0..folding_params[i - 1] {
+                for (j, v) in val.iter().enumerate() {
                     let ind = t_shifts[k] as usize + j * folded_len;
-                    let mut x = coset.step_size * ind + eval_offsets[i - 1];
+                    let mut x: CirclePointIndex = coset.step_size * ind + eval_offsets[i - 1];
                     if k % 2 == 0 {
                         x = x.conj();
                     }
@@ -670,9 +676,10 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
                         / eval_circ_poly_at(&zpol, &x.to_secure_field_point());
 
                     let m = d.0 .0 * geom_sum((x.to_point() + r_comb).x, rs.len());
-                    v.push(m);
+                    v_s.push(m);
                 }
-                vals = &v;
+            } else {
+                v_s.append(&mut val.to_vec());
             }
 
             let lagrange_interp = circ_lagrange_interp(
@@ -680,7 +687,7 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
                     .iter()
                     .map(|x| x.to_point())
                     .collect(),
-                vals,
+                &v_s,
                 true,
             )
             .unwrap();
@@ -729,34 +736,33 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
         repetition_params[repetition_params.len() - 1],
     );
 
-    // #Warning: code below copy-and-pasted from inside main loop
-    // branch_len = int(math.log2(self.eval_sizes[-1])) + 1 + 1
-    // num_branches = self.folding_params[-1]*self.repetition_params[-1]
-    // oracle_data = [proof[proof_pos + j*32: proof_pos + (j+1)*32] for j in
-    // range(branch_len*num_branches)] proof_pos += branch_len*num_branches*32
-    // oracle_branches = [oracle_data[j*branch_len: (j+1)*branch_len] for j in range(num_branches)]
-
     let coset3 = coset.repeated_double(folded_len.ilog2());
     let xs2s = calculate_xs2s(coset3, folding_params[folding_params.len() - 1]);
 
-    // for k in range(self.repetition_params[-1]):
-    // vals=[]
-    // x0 = f.mul(f.exp(rt, t_shifts[k]), self.eval_offsets[-1]).conj(t_conj[k])%self.modulus
-    // for j in range(self.folding_params[-1]):
-    //     branch = oracle_branches[k*self.folding_params[-1] + j]
-    //     ind = t_shifts[k] + j*folded_len
-    //     verify_branch(m_root, ind + t_conj[k]*self.eval_sizes[-1], branch)
-    //     val = int.from_bytes(branch[0],'big')
+    // let root = output_roots.remove(0);
+    let output_branch = output_branches.remove(0);
+    let indexes = opened_indexes.remove(0);
+    let values = opened_values.remove(0);
+    let merkle_tree_log_size = merkle_tree_log_sizes.remove(0);
 
-    //     x = f.mul(f.exp(rt, ind), self.eval_offsets[-1]).conj(t_conj[k])%self.modulus
-    //     vals.append(f.mul(f.div(val - f.eval_circ_poly_at(pol, x), f.eval_circ_poly_at(zpol,x)),
-    //                       f.geom_sum((x*r_comb).x, len(rs))))
-    // assert f.eval_circ_poly_at(f.circ_lagrange_interp(xs2s[t_conj[k]], vals, normalize=True),
-    // f.mul(r_fold, x0.conj())) ==\     fft_inv(g_pol, self.modulus, Gaussian(1,0),
-    // f.mul(f.exp(rt2,t_shifts[k]),f.exp(self.eval_offsets[-1],self.folding_params[-1])).
-    // conj(t_conj[k])%self.modulus)[0]
+    let verifier = MerkleVerifier::<MC::H> {
+        root: m_root,
+        column_log_sizes: vec![merkle_tree_log_size as u32],
+    };
 
-    for k in 0..repetition_params[repetition_params.len() - 1] {
+    let mut queries = BTreeMap::<u32, Vec<usize>>::new();
+    queries.insert(merkle_tree_log_size as u32, indexes);
+
+    let verify_res = verifier.verify(queries, values.clone(), output_branch);
+    if !verify_res.is_ok() {
+        return Err("verify_res.is_ok()".to_owned());
+    }
+
+    let mut vals = &values[0];
+
+    for (k, val) in (0..repetition_params[repetition_params.len() - 1])
+        .zip(vals.chunks(folding_params[folding_params.len() - 1]))
+    {
         let intr = coset.step_size * (t_shifts[k] as usize);
         let mut intr2 = eval_offsets[eval_offsets.len() - 1];
         if k % 2 == 0 {
@@ -765,30 +771,11 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
 
         let x0 = intr + intr2;
 
-        let root = output_roots.remove(0);
-        let indexes = opened_indexes.remove(0);
-        let values = opened_values.remove(0);
-        let output_branch = output_branches.remove(0);
-
-        let verifier = MerkleVerifier::<MC::H> {
-            root,
-            column_log_sizes: vec![log_size as u32],
-        };
-
-        let mut queries = BTreeMap::<u32, Vec<usize>>::new();
-        queries.insert(log_size as u32, indexes);
-
-        let verify_res = verifier.verify(queries, values.clone(), output_branch);
-        if !verify_res.is_ok() {
-            return Err("verify_res.is_ok()".to_owned());
-        }
-
-        let mut vals = &values[0];
-
-        let mut v = vec![];
-        for j in 0..folding_params[folding_params.len() - 1] {
+        let mut v_s = vec![];
+        for (j, v) in val.iter().enumerate() {
             let ind = t_shifts[k] as usize + j * folded_len;
-            let mut x = coset.step_size * ind + eval_offsets[eval_offsets.len() - 1];
+            let mut x: CirclePointIndex =
+                coset.step_size * ind + eval_offsets[eval_offsets.len() - 1];
             if k % 2 == 0 {
                 x = x.conj();
             }
@@ -798,21 +785,20 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
                 / eval_circ_poly_at(&zpol, &x.to_secure_field_point());
 
             let m = d.0 .0 * geom_sum((x.to_point() + r_comb).x, rs.len());
-            v.push(m);
+            v_s.push(m);
         }
-        vals = &v;
 
         let lagrange_interp = circ_lagrange_interp(
             &xs2s[t_conj[k] as usize]
                 .iter()
                 .map(|x| x.to_point())
                 .collect(),
-            vals,
+            &v_s,
             true,
         )
         .unwrap();
-
-        let lhs = eval_circ_poly_at(&lagrange_interp, &(r_fold + x0.conj().to_point()));
+        let mult = r_fold + x0.conj().to_point();
+        let lhs = eval_circ_poly_at(&lagrange_interp, &mult);
 
         let mut offset = coset2.step_size * t_shifts[k] as usize
             + eval_offsets[eval_offsets.len() - 1] * folding_params[folding_params.len() - 1];
@@ -821,7 +807,9 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
             offset = offset.conj();
         }
 
-        let rhs = CirclePoly::<B>::new(proof.g_pol_final.iter().map(|x| *x).collect())
+        let mut coeffs: Vec<BaseField> = proof.g_pol_final.iter().map(|x| *x).collect();
+        // coeffs.insert(0, BaseField::zero());
+        let rhs = CirclePoly::<B>::new(coeffs.iter().map(|x| *x).collect())
             .eval_at_point(offset.to_secure_field_point())
             .0
              .0;

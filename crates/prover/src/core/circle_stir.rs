@@ -6,7 +6,7 @@ use super::poly::circle::CanonicCoset;
 
 pub struct CircleStirParams {
     pub coset: Coset,
-    pub maxdeg_plus_1: u32,
+    pub maxdeg_plus_1: usize,
     pub eval_sizes: Vec<usize>,
     pub folding_params: Vec<usize>,
     pub eval_offsets: Vec<CirclePointIndex>,
@@ -55,7 +55,7 @@ mod tests {
     use crate::core::backend::CpuBackend;
     use crate::core::channel::Blake2sChannel;
     use crate::core::circle::CirclePointIndex;
-    use crate::core::circle_fft::{evaluate, prove_low_degree};
+    use crate::core::circle_fft::{evaluate, prove_low_degree, verify_low_degree_proof};
     use crate::core::fields::m31::BaseField;
     use crate::core::poly::circle::CirclePoly;
     use crate::core::vcs::blake2_merkle::Blake2sMerkleChannel;
@@ -78,22 +78,26 @@ mod tests {
         let proof_res = prove_low_degree::<CpuBackend, Blake2sMerkleChannel>(
             prover_channel,
             &params.coset,
-            params.eval_sizes,
-            params.repetition_params,
-            params.folding_params,
+            &params.eval_sizes,
+            params.maxdeg_plus_1,
+            &params.repetition_params,
+            &params.folding_params,
             &evaluate.values,
             &params.eval_offsets,
-        ).unwrap();
+        )
+        .unwrap();
 
-        println!("proof_res: {:?}", proof_res);
-
-        // pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
-        //     channel: &mut MC::C,
-        //     coset: &Coset,
-        //     eval_sizes: Vec<usize>,
-        //     repetition_params: Vec<usize>,
-        //     folding_params: Vec<usize>,
-        //     values: &Vec<BaseField>,
-        //     eval_offsets: &Vec<CirclePointIndex>,
+        // println!("proof_res: {:?}", proof_res);
+        let verify_channel = &mut Blake2sChannel::default();
+        let verify_res = verify_low_degree_proof::<CpuBackend, Blake2sMerkleChannel>(
+            verify_channel,
+            proof_res,
+            &params.coset,
+            &params.eval_sizes,
+            &params.repetition_params,
+            &params.folding_params,
+            &params.eval_offsets,
+            log_d as usize,
+        );
     }
 }
