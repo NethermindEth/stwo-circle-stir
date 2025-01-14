@@ -658,7 +658,7 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
         for (k, val) in (0..repetition_params[i - 1]).zip(vals.chunks(folding_params[i - 1])) {
             let intr = coset.step_size * (t_shifts[k] as usize);
             let mut x0 = intr + eval_offsets[i - 1];
-            if k % 2 == 0 {
+            if t_conj[k] % 2 != 0 {
                 x0 = x0.conj();
             }
 
@@ -667,12 +667,11 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
                 for (j, v) in val.iter().enumerate() {
                     let ind = t_shifts[k] as usize + j * folded_len;
                     let mut x: CirclePointIndex = coset.step_size * ind + eval_offsets[i - 1];
-                    if k % 2 == 0 {
+                    if t_conj[k] % 2 != 0 {
                         x = x.conj();
                     }
 
-                    let val = vals[j];
-                    let d = (val - eval_circ_poly_at(&pol, &x.to_point()))
+                    let d = (*v - eval_circ_poly_at(&pol, &x.to_point()))
                         / eval_circ_poly_at(&zpol, &x.to_secure_field_point());
 
                     let m = d.0 .0 * geom_sum((x.to_point() + r_comb).x, rs.len());
@@ -764,7 +763,7 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
     {
         let intr = coset.step_size * (t_shifts[k] as usize);
         let mut x0 = intr + eval_offsets[eval_offsets.len() - 1];
-        if k % 2 == 0 {
+        if t_conj[k] % 2 != 0 {
             x0 = x0.conj();
         }
 
@@ -773,12 +772,11 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
             let ind = t_shifts[k] as usize + j * folded_len;
             let mut x: CirclePointIndex =
                 coset.step_size * ind + eval_offsets[eval_offsets.len() - 1];
-            if k % 2 == 0 {
+            if t_conj[k] % 2 != 0 {
                 x = x.conj();
             }
 
-            let val = vals[j];
-            let d = (val - eval_circ_poly_at(&pol, &x.to_point()))
+            let d = (*v - eval_circ_poly_at(&pol, &x.to_point()))
                 / eval_circ_poly_at(&zpol, &x.to_secure_field_point());
 
             let m = d.0 .0 * geom_sum((x.to_point() + r_comb).x, rs.len());
@@ -800,7 +798,7 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
         let mut offset = coset2.step_size * t_shifts[k] as usize
             + eval_offsets[eval_offsets.len() - 1] * folding_params[folding_params.len() - 1];
 
-        if k % 2 == 0 {
+        if t_conj[k] % 2 != 0 {
             offset = offset.conj();
         }
 
