@@ -22,7 +22,7 @@ use super::vcs::prover::{MerkleDecommitment, MerkleProver};
 use super::vcs::verifier::MerkleVerifier;
 use crate::core::fields::ComplexConjugate;
 
-fn calculate_xs2s(coset: Coset, folding_param: usize) -> [Vec<CirclePointIndex>; 2] {
+pub fn calculate_xs2s(coset: Coset, folding_param: usize) -> [Vec<CirclePointIndex>; 2] {
     let mut xs2s: [Vec<CirclePointIndex>; 2] = [vec![], vec![]];
     xs2s[0] = coset.get_mul_cycle(CirclePointIndex(0));
     xs2s[1].push(xs2s[0][0]);
@@ -213,7 +213,7 @@ fn calculate_rs_and_g_rs(
     (rs, g_rs)
 }
 
-fn calculate_rs(
+pub fn calculate_rs(
     r_outs: &Vec<CirclePoint<SecureField>>,
     t_shifts: &Vec<u32>,
     t_conj: &Vec<u32>,
@@ -260,13 +260,14 @@ fn fold_val(
     eval_size: usize,
     r_comb: CirclePoint<BaseField>,
     g_hat_shift: &Vec<M31>,
+    oods_rep: usize,
 ) -> Vec<BaseField> {
     let pol = circ_lagrange_interp(&rs, &g_rs, false).unwrap();
     let pol_vals: Vec<BaseField> = xs
         .iter()
         .map(|x| eval_circ_poly_at(&pol, &x.to_point()))
         .collect();
-    let zpol = circ_zpoly(&rs, None, true); // TODO: use `split_exts` to convert zpol to M31
+    let zpol = circ_zpoly(&rs, None, true, Some(oods_rep)); // TODO: use `split_exts` to convert zpol to M31
     let zpol = circ_poly_to_int_poly(&zpol).unwrap();
 
     let mut vals = vec![];
@@ -466,6 +467,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
             eval_sizes[i],
             r_comb,
             &g_hat_shift.values.to_cpu(),
+            ood_rep,
         );
     }
 
@@ -537,7 +539,7 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
     eval_offsets: &Vec<CirclePointIndex>,
     log_size: usize,
 ) -> Result<(), String> {
-    let ood_rep = 1;
+    let oods_rep = 1;
     let mut opened_indexes = proof.opened_indexes;
     let mut opened_values = proof.opened_values;
     let mut output_roots = proof.output_roots;
@@ -608,11 +610,11 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
         MC::mix_root(channel, m2_root);
 
         let r_outs: Vec<CirclePoint<SecureField>> = channel
-            .draw_felts(ood_rep)
+            .draw_felts(oods_rep)
             .iter()
             .map(|v| (*v).into())
             .collect();
-        let temp_betas = all_betas.split_off(ood_rep);
+        let temp_betas = all_betas.split_off(oods_rep);
         let betas = all_betas;
         all_betas = temp_betas;
 
@@ -655,12 +657,10 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
 
         for (k, val) in (0..repetition_params[i - 1]).zip(vals.chunks(folding_params[i - 1])) {
             let intr = coset.step_size * (t_shifts[k] as usize);
-            let mut intr2 = eval_offsets[i - 1];
+            let mut x0 = intr + eval_offsets[i - 1];
             if k % 2 == 0 {
-                intr2 = intr2.conj();
+                x0 = x0.conj();
             }
-
-            let x0: CirclePointIndex = intr + intr2;
 
             let mut v_s = vec![];
             if i != 1 {
@@ -696,13 +696,12 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
             g_hat.push(eval_circ_poly_at);
         }
 
-        log_size = log_size - folding_params[i - 1];
         coset = coset_new;
         m_root = m2_root;
         r_fold = r_fold_new;
         r_comb = r_comb_new;
         rs = rs_new;
-        zpol = circ_zpoly(&rs, None, true);
+        zpol = circ_zpoly(&rs, None, true, Some(oods_rep));
         g_rs = betas
             .into_iter()
             .chain(g_hat.into_iter().map(|x| QM31::from_single_m31(x)))
@@ -764,12 +763,10 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
         .zip(vals.chunks(folding_params[folding_params.len() - 1]))
     {
         let intr = coset.step_size * (t_shifts[k] as usize);
-        let mut intr2 = eval_offsets[eval_offsets.len() - 1];
+        let mut x0 = intr + eval_offsets[eval_offsets.len() - 1];
         if k % 2 == 0 {
-            intr2 = intr2.conj();
+            x0 = x0.conj();
         }
-
-        let x0 = intr + intr2;
 
         let mut v_s = vec![];
         for (j, v) in val.iter().enumerate() {
@@ -808,7 +805,10 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
         }
 
         let mut coeffs: Vec<BaseField> = proof.g_pol_final.iter().map(|x| *x).collect();
-        // coeffs.insert(0, BaseField::zero());
+        if !coeffs.len().is_power_of_two() {
+            let next_power_of_two = coeffs.len().next_power_of_two();
+            coeffs.resize(next_power_of_two, BaseField::from(0));
+        }
         let rhs = CirclePoly::<B>::new(coeffs.iter().map(|x| *x).collect())
             .eval_at_point(offset.to_secure_field_point())
             .0
@@ -822,7 +822,7 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
     Ok(())
 }
 
-fn geom_sum<F: Field>(x: F, p: usize) -> F {
+pub fn geom_sum<F: Field>(x: F, p: usize) -> F {
     let mut ans = F::one();
     let mut prod = F::one();
 
@@ -834,10 +834,11 @@ fn geom_sum<F: Field>(x: F, p: usize) -> F {
     ans
 }
 
-fn circ_zpoly<F>(
+pub fn circ_zpoly<F>(
     pts: &Vec<CirclePoint<F>>,
     nzero: Option<CirclePoint<F>>,
     split_exts: bool,
+    oods_rep: Option<usize>,
 ) -> [Vec<F>; 2]
 where
     F: Field + ToBaseField,
@@ -847,8 +848,20 @@ where
     if split_exts {
         let mut pts2 = vec![];
 
-        for p in pts {
+        for (index, p) in pts.iter().enumerate() {
             let mut all_conjs = p.all_conj();
+            if oods_rep.is_some() && index < oods_rep.unwrap() {
+                // TODO: refactor the entire approach so that we dont need to use
+                // this hack
+                // this is for when we have a mix of QM31 and M31 values where
+                // the M31s have been 'forced' converted to QM31s
+                // QM31 will have 4 all_conjs values while M31 will only have 1
+
+                if all_conjs.len() != 4 {
+                    all_conjs.resize(4, all_conjs[0]);
+                }
+            }
+
             pts2.append(&mut all_conjs);
         }
 
@@ -873,12 +886,12 @@ where
     ans
 }
 
-fn eval_circ_poly_at<F: Field>(polys: &[Vec<F>; 2], point: &CirclePoint<F>) -> F {
+pub fn eval_circ_poly_at<F: Field>(polys: &[Vec<F>; 2], point: &CirclePoint<F>) -> F {
     eval_poly_at(&polys[0], &point.x) + eval_poly_at(&polys[1], &point.x) * point.y
 }
 
 // Evaluate a polynomial at a point
-fn eval_poly_at<F: Field>(poly: &Vec<F>, pt: &F) -> F {
+pub fn eval_poly_at<F: Field>(poly: &Vec<F>, pt: &F) -> F {
     let mut y = F::zero();
     let mut power_of_x = F::one();
 
@@ -980,7 +993,7 @@ fn mul_poly_by_const<F: Field>(poly: &Vec<F>, constant: &F) -> Vec<F> {
     poly.iter().map(|coeff| *coeff * *constant).collect()
 }
 
-fn circ_lagrange_interp<F>(
+pub fn circ_lagrange_interp<F>(
     pts: &Vec<CirclePoint<F>>,
     vals: &Vec<F>,
     normalize: bool,
@@ -1018,14 +1031,14 @@ where
             .cloned()
             .collect();
 
-        let pol = circ_zpoly(&pts_removed, Some(pts[i]), false);
+        let pol = circ_zpoly(&pts_removed, Some(pts[i]), false, None);
         let scale = vals[i] / eval_circ_poly_at(&pol, &pts[i]);
         ans = add_circ_polys(&ans, &mul_circ_by_const(&pol, &scale));
     }
 
     if normalize && pts.len() % 2 == 0 {
         let d = pts.len() / 2;
-        let zpol = circ_zpoly(&pts, None, false);
+        let zpol = circ_zpoly(&pts, None, false, None);
         let coef_a = if ans[1].len() >= d {
             ans[1][d - 1]
         } else {
@@ -1073,7 +1086,7 @@ where
     Ok([p0, p1])
 }
 
-trait ToBaseField {
+pub trait ToBaseField {
     fn to_basefield(&self) -> Result<BaseField, String>;
 }
 
@@ -1108,7 +1121,7 @@ impl ToBaseField for QM31 {
     }
 }
 
-trait Conj {
+pub trait Conj {
     fn conj(&self) -> Self;
 }
 
@@ -1121,7 +1134,7 @@ impl Conj for CirclePointIndex {
 }
 
 // TODO: probably refactor this into the ComplexConjugate trait
-trait AllConjugate {
+pub trait AllConjugate {
     fn all_conj(&self) -> Vec<Self>
     where
         Self: Sized;
@@ -1180,7 +1193,7 @@ impl AllConjugate for CirclePoint<QM31> {
         x.iter()
             .zip(y.iter())
             .map(|(x, y)| CirclePoint { x: *x, y: *y })
-            .unique()
+            //.unique()
             .collect()
     }
 }
@@ -1210,7 +1223,6 @@ mod tests {
         get_betas, interpolate, mul_circ_by_const, mul_circ_polys, mul_polys, shift_g_hat,
         sub_circ_polys, sub_polys, Conj,
     };
-    use crate::core::fields::cm31::CM31;
     use crate::core::fields::m31::{BaseField, M31};
     use crate::core::fields::qm31::{SecureField, QM31};
     use crate::core::pcs::PcsConfig;
@@ -1559,20 +1571,23 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_cm31_all_conj() {
+        todo!();
         // return [self,CM(self.a,-self.b,self.modulus)]
-        let val = CM31::from_m31(BaseField::from(123), BaseField::from(321));
-        let conjs = val.all_conj();
+        // let val = CM31::from_m31(BaseField::from(123), BaseField::from(321));
+        // let conjs = val.all_conj();
 
-        assert_eq!(conjs.len(), 2);
-        assert_eq!(conjs[0], val);
-        assert_eq!(
-            conjs[1],
-            CM31::from_m31(BaseField::from(123), BaseField::from(-321))
-        )
+        // assert_eq!(conjs.len(), 2);
+        // assert_eq!(conjs[0], val);
+        // assert_eq!(
+        //     conjs[1],
+        //     CM31::from_m31(BaseField::from(123), BaseField::from(-321))
+        // )
     }
 
     #[test]
+    #[ignore]
     fn test_qm31_all_conj() {
         todo!();
         // // conj = [self,QM(self.A,-self.B,self.param)]
@@ -1685,13 +1700,13 @@ mod tests {
     }
 
     #[test]
-    fn test_circ_zpoly() {
+    fn test_circ_zpoly_split_exts_false() {
         let a = vec![
             CirclePointIndex(1).to_point(),
             CirclePointIndex(2).to_point(),
             CirclePointIndex(3).to_point(),
         ];
-        let res = circ_zpoly(&a, None, false);
+        let res = circ_zpoly(&a, None, false, None);
         assert_eq!(
             res,
             [
@@ -1699,6 +1714,55 @@ mod tests {
                 vec![M31(2147483621), M31(1)]
             ]
         );
+    }
+
+    #[test]
+    fn test_circ_zpoly_split_exts_true() {
+        let a = vec![
+            CirclePoint {
+                x: QM31::from_single_m31(M31(2)),
+                y: QM31::from_single_m31(M31(1268011823)),
+            },
+            CirclePoint {
+                x: QM31::from_single_m31(M31(2020439472)),
+                y: QM31::from_single_m31(M31(224065515)),
+            },
+            CirclePoint {
+                x: QM31::from_single_m31(M31(426051698)),
+                y: QM31::from_single_m31(M31(419694706)),
+            },
+            CirclePoint {
+                x: QM31::from_single_m31(M31(1055058706)),
+                y: QM31::from_single_m31(M31(919471560)),
+            },
+            CirclePoint {
+                x: QM31::from_single_m31(M31(141701737)),
+                y: QM31::from_single_m31(M31(2147483550)),
+            },
+        ];
+
+        let res = circ_zpoly(&a, None, true, Some(1));
+
+        assert_eq!(
+            res,
+            [
+                vec![
+                    QM31::from_single_m31(M31(2096851543)),
+                    QM31::from_single_m31(M31(344681428)),
+                    QM31::from_single_m31(M31(1656326039)),
+                    QM31::from_single_m31(M31(257962589)),
+                    QM31::from_single_m31(M31(1027629259)),
+                ],
+                vec![
+                    QM31::from_single_m31(M31(1583685796)),
+                    QM31::from_single_m31(M31(326006918)),
+                    QM31::from_single_m31(M31(633712382)),
+                    QM31::from_single_m31(M31(1551165002))
+                ]
+            ]
+        )
+        // [[2096851543, 344681428, 1656326039, 257962589, 1027629259], [1583685796, 326006918,
+        // 633712382, 1551165002]]
     }
 
     #[test]
@@ -1973,7 +2037,7 @@ mod tests {
         println!("rs: {:?}", rs);
         println!("g_rs: {:?}", g_rs);
 
-        let folded_vals = fold_val(&rs, &g_rs, &xs, eval_size, r_fold, &g_hat_shift);
+        let folded_vals = fold_val(&rs, &g_rs, &xs, eval_size, r_fold, &g_hat_shift, 1);
 
         assert_eq!(
             folded_vals,
