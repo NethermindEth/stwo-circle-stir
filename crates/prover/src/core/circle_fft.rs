@@ -33,7 +33,7 @@ pub fn calculate_xs2s(coset: Coset, folding_param: usize) -> [Vec<CirclePointInd
     xs2s
 }
 
-fn calculate_xs(coset: &Coset, eval_offset: CirclePointIndex) -> Vec<CirclePointIndex> {
+pub fn calculate_xs(coset: &Coset, eval_offset: CirclePointIndex) -> Vec<CirclePointIndex> {
     let mut xs = coset.get_mul_cycle(eval_offset);
     let mut xs_conj: Vec<CirclePointIndex> = xs.iter().map(|x| x.conj()).collect();
     xs.append(&mut xs_conj);
@@ -41,7 +41,7 @@ fn calculate_xs(coset: &Coset, eval_offset: CirclePointIndex) -> Vec<CirclePoint
     xs
 }
 
-fn calculate_g_hat(
+pub fn calculate_g_hat(
     folded_len: usize,
     folding_param: usize,
     eval_size: usize,
@@ -89,7 +89,7 @@ fn calculate_g_hat(
     g_hat
 }
 
-fn shift_g_hat<B: BackendForChannel<MC>, MC: MerkleChannel>(
+pub fn shift_g_hat<B: BackendForChannel<MC>, MC: MerkleChannel>(
     g_hat: &Vec<BaseField>,
     coset: Coset,
     expand_factor: usize,
@@ -152,7 +152,7 @@ fn generate_rnd_r_t_values<MC: MerkleChannel>(
     (r_fold, r_comb, t_vals, t_shifts, t_conj)
 }
 
-fn interpolate<B: BackendForChannel<MC>, MC: MerkleChannel>(
+pub fn interpolate<B: BackendForChannel<MC>, MC: MerkleChannel>(
     coset: &Coset,
     to_shift: CirclePointIndex,
     eval: &Vec<BaseField>,
@@ -180,7 +180,7 @@ pub fn evaluate<B: BackendForChannel<MC>, MC: MerkleChannel>(
     evals
 }
 
-fn get_betas<B: BackendForChannel<MC>, MC: MerkleChannel>(
+pub fn get_betas<B: BackendForChannel<MC>, MC: MerkleChannel>(
     coset: &Coset,
     p_offset: CirclePointIndex,
     g_hat: &Vec<BaseField>,
@@ -197,7 +197,7 @@ fn get_betas<B: BackendForChannel<MC>, MC: MerkleChannel>(
     betas
 }
 
-fn calculate_rs_and_g_rs(
+pub fn calculate_rs_and_g_rs(
     r_outs: &Vec<CirclePoint<SecureField>>,
     betas: &Vec<SecureField>,
     t_shifts: &Vec<u32>,
@@ -253,7 +253,7 @@ fn calculate_g_rs(
     g_rs
 }
 
-fn fold_val(
+pub fn fold_val(
     rs: &Vec<CirclePoint<SecureField>>,
     g_rs: &Vec<SecureField>,
     xs: &Vec<CirclePointIndex>,

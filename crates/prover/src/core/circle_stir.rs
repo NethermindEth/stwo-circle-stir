@@ -52,13 +52,16 @@ pub fn generate_proving_params(
 
 #[cfg(test)]
 mod tests {
+    use num_traits::Zero;
+
     use super::generate_proving_params;
-    use crate::core::backend::CpuBackend;
+    use crate::core::backend::{Column, CpuBackend};
     use crate::core::channel::Blake2sChannel;
     use crate::core::circle::{CirclePoint, CirclePointIndex};
     use crate::core::circle_fft::{
-        calculate_rs, calculate_xs2s, circ_lagrange_interp, circ_zpoly, eval_circ_poly_at,
-        evaluate, geom_sum, prove_low_degree, verify_low_degree_proof, Conj,
+        calculate_g_hat, calculate_rs, calculate_rs_and_g_rs, calculate_xs, calculate_xs2s,
+        circ_lagrange_interp, circ_zpoly, eval_circ_poly_at, evaluate, fold_val, geom_sum,
+        get_betas, interpolate, prove_low_degree, shift_g_hat, verify_low_degree_proof, Conj,
     };
     use crate::core::fields::m31::BaseField;
     use crate::core::fields::qm31::{SecureField, QM31};
@@ -66,7 +69,7 @@ mod tests {
     use crate::core::vcs::blake2_merkle::Blake2sMerkleChannel;
 
     #[test]
-    fn test_prove() {
+    fn test_prove_and_verify() {
         let prover_channel = &mut Blake2sChannel::default();
         let log_d = 4;
         let log_stopping_degree = 1;
@@ -104,6 +107,188 @@ mod tests {
             &params.eval_offsets,
             log_d as usize,
         );
+    }
+
+    #[test]
+    fn test_prove() {
+        let prover_channel = &mut Blake2sChannel::default();
+        let log_d = 4;
+        let log_stopping_degree = 1;
+        let log_folding_param = 2;
+        let params = generate_proving_params(log_d, log_stopping_degree, log_folding_param);
+
+        let poly = (0..1 << (log_d + 1))
+            .map(|i| BaseField::from(i))
+            .collect::<Vec<_>>();
+        let poly: CirclePoly<CpuBackend> = CirclePoly::<CpuBackend>::new(poly);
+        let evaluate =
+            evaluate::<CpuBackend, Blake2sMerkleChannel>(poly, &params.coset, CirclePointIndex(1));
+
+        let eval_offsets = params.eval_offsets.clone();
+        let eval_offsets_points = eval_offsets
+            .iter()
+            .map(|x| x.to_point())
+            .collect::<Vec<_>>();
+        let eval_sizes = params.eval_sizes.clone();
+        let folding_params = params.folding_params.clone();
+        let repetition_params = params.repetition_params.clone();
+        let values = evaluate.values.clone();
+        let mut coset = params.coset.clone();
+        let ood_rep = 1;
+
+        let mut xs = calculate_xs(&coset, eval_offsets[0]);
+        let xs_points = xs.iter().map(|x| x.to_point()).collect::<Vec<_>>();
+
+        if values.len() != xs.len() && xs.len() / 2 != eval_sizes[0] {
+            assert!(false);
+        }
+
+        let mut vals = values.to_owned();
+
+        let mut r_fold = CirclePoint {
+            x: BaseField::from(1377508080),
+            y: BaseField::from(2035645549),
+        };
+        let mut g_hat = vec![];
+
+        let mut folded_len = 0;
+
+        for i in 1..folding_params.len() + 1 {
+            // # fold using r-fold
+            if eval_sizes[i - 1] % folding_params[i - 1] != 0 {
+                assert!(false);
+            }
+
+            folded_len = eval_sizes[i - 1] / folding_params[i - 1];
+            let mut coset2 = coset.repeated_double(folded_len.ilog2());
+
+            let xs2s = calculate_xs2s(coset2, folding_params[i - 1]);
+
+            if i == 2 {
+                // (1300800228, 574193615)
+                r_fold = CirclePoint {
+                    x: BaseField::from(1300800228),
+                    y: BaseField::from(574193615),
+                };
+            }
+            g_hat = calculate_g_hat(
+                folded_len,
+                folding_params[i - 1],
+                eval_sizes[i - 1],
+                r_fold,
+                &vals,
+                &xs2s,
+                &xs,
+            );
+
+            if i == folding_params.len() {
+                break;
+            }
+            if eval_sizes[i] % folded_len != 0 {
+                assert!(false);
+            }
+            if eval_sizes[i - 1] % eval_sizes[i] != 0 {
+                assert!(false);
+            }
+
+            let expand_factor = eval_sizes[i] / folded_len;
+            let eval_size_scale = eval_sizes[i - 1] / eval_sizes[i];
+            coset = coset.repeated_double(eval_size_scale.ilog2());
+            coset2 = coset.repeated_double(expand_factor.ilog2());
+            let p_offset = eval_offsets[i - 1] * folding_params[i - 1];
+
+            let g_hat_shift = shift_g_hat::<CpuBackend, Blake2sMerkleChannel>(
+                &g_hat,
+                coset,
+                expand_factor,
+                p_offset,
+                eval_offsets[i],
+            );
+
+            xs = calculate_xs(&coset, eval_offsets[i]);
+            let xs_points = xs.iter().map(|x| x.to_point()).collect::<Vec<_>>();
+
+            // [(((2074834727, 1132982331), (1432421146, 1584772322)), ((913587039, 1052462600),
+            // (1132107682, 2015946599)))]
+            let r_outs: Vec<CirclePoint<SecureField>> = vec![CirclePoint {
+                x: QM31::from_m31(
+                    BaseField::from(2074834727),
+                    BaseField::from(1132982331),
+                    BaseField::from(1432421146),
+                    BaseField::from(1584772322),
+                ),
+                y: QM31::from_m31(
+                    BaseField::from(913587039),
+                    BaseField::from(1052462600),
+                    BaseField::from(1132107682),
+                    BaseField::from(2015946599),
+                ),
+            }];
+
+            let betas =
+                get_betas::<CpuBackend, Blake2sMerkleChannel>(&coset2, p_offset, &g_hat, &r_outs);
+
+            // (1300800228, 574193615)
+            let r_fold = CirclePoint {
+                x: BaseField::from(1300800228),
+                y: BaseField::from(574193615),
+            };
+
+            // (1304604544, 1743647705)
+            let r_comb = CirclePoint {
+                x: BaseField::from(1304604544),
+                y: BaseField::from(1743647705),
+            };
+
+            let t_vals = vec![21, 29, 30, 23];
+            let t_shifts = vec![10, 14, 15, 11];
+            let t_conj = vec![1, 1, 0, 1];
+
+            if repetition_params[i - 1] % 2 != 0 {
+                assert!(false);
+            }
+
+            let (rs, g_rs) = calculate_rs_and_g_rs(
+                &r_outs, &betas, &t_shifts, &t_conj, &coset2, p_offset, &g_hat, folded_len,
+            );
+
+            vals = fold_val(
+                &rs,
+                &g_rs,
+                &xs,
+                eval_sizes[i],
+                r_comb,
+                &g_hat_shift.values.to_cpu(),
+                ood_rep,
+            );
+        }
+
+        let final_folding_param = folding_params[folding_params.len() - 1];
+        let to_shift = eval_offsets[eval_offsets.len() - 1] * final_folding_param;
+        let g_pol = interpolate::<CpuBackend, Blake2sMerkleChannel>(
+            &coset.repeated_double((final_folding_param as u32).ilog2()),
+            to_shift,
+            &g_hat,
+        );
+
+        let numer = params.maxdeg_plus_1;
+        let denom: usize = folding_params.iter().product();
+        let final_deg = numer / denom;
+
+        let g_pol_coeffs: Vec<BaseField> = g_pol.coeffs.to_cpu();
+        let (g_pol_final, g_pol_zeroes) = g_pol_coeffs.split_at(2 * final_deg + 1);
+
+        let is_zero = g_pol_zeroes.iter().all(|x| *x == BaseField::zero());
+        if !is_zero {
+            assert!(false);
+        }
+
+        let g_pol_final_secure: Vec<QM31> = g_pol_final
+            .iter()
+            .map(|g| SecureField::from_single_m31(*g))
+            .collect();
+
+        println!("g_pol_final_secure: {:?}", g_pol_final_secure);
     }
 
     #[test]
