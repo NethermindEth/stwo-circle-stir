@@ -20,6 +20,7 @@ pub mod queries;
 pub mod test_utils;
 pub mod utils;
 pub mod vcs;
+pub mod simple_merkle;
 
 /// A vector in which each element relates (by index) to a column in the trace.
 pub type ColumnVec<T> = Vec<T>;

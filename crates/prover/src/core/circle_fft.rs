@@ -1056,6 +1056,86 @@ where
     circ_poly_to_int_poly(&ans)
 }
 
+pub fn circ_lagrange_interp_mixed_vals(
+    pts: &Vec<CirclePoint<SecureField>>,
+    vals: &Vec<SecureField>,
+    normalize: bool,
+    oods_rep: Option<usize>,
+) -> Result<[Vec<BaseField>; 2], String>
+// where
+//     F: Field + AllConjugate + ToBaseField,
+//     CirclePoint<F>: AllConjugate,
+{
+    if pts.len() != vals.len() {
+        return Err("Cannot interpolate".to_owned());
+    }
+
+    let mut n_pts = vec![];
+    let mut n_vals = vec![];
+
+    for i in 0..pts.len() {
+        let mut p_conj = pts[i].all_conj();
+        // let mut v_conj = vals[i].all_conj();
+
+        let mut v_conj = vec![];
+        if oods_rep.is_some() && i >= oods_rep.unwrap() {
+            let v = vals[i].to_basefield();
+            if v.is_err() {
+                return Err(v.unwrap_err());
+            }
+            let v = v.unwrap();
+            let conjs = v.all_conj();
+            let mut conjs_secure = conjs.iter().map(|c| QM31::from_single_m31(*c)).collect();
+            v_conj.append(&mut conjs_secure);
+        } else {
+            v_conj.append(&mut vals[i].all_conj());
+        }
+
+        if p_conj.len() != v_conj.len() {
+            return Err("Cannot interpolate".to_owned());
+        }
+
+        n_pts.append(&mut p_conj);
+        n_vals.append(&mut v_conj);
+    }
+    let pts = n_pts;
+    let vals = n_vals;
+
+    let mut ans = [vec![], vec![]];
+    for i in 0..pts.len() {
+        let pts_removed = pts[..i]
+            .iter()
+            .chain(pts[i + 1..].iter())
+            .cloned()
+            .collect();
+
+        let pol = circ_zpoly(&pts_removed, Some(pts[i]), false, None);
+        let scale = vals[i] / eval_circ_poly_at(&pol, &pts[i]);
+        ans = add_circ_polys(&ans, &mul_circ_by_const(&pol, &scale));
+    }
+
+    if normalize && pts.len() % 2 == 0 {
+        let d = pts.len() / 2;
+        let zpol = circ_zpoly(&pts, None, false, None);
+        let coef_a = if ans[1].len() >= d {
+            ans[1][d - 1]
+        } else {
+            SecureField::zero()
+        };
+        let scale = coef_a / zpol[1][d - 1];
+        ans = sub_circ_polys(&ans, &mul_circ_by_const(&zpol, &scale));
+    }
+
+    for i in 0..pts.len() {
+        let eval = eval_circ_poly_at(&ans, &pts[i]);
+        if eval != vals[i] {
+            return Err("Cannot interoplate".to_owned());
+        }
+    }
+
+    circ_poly_to_int_poly(&ans)
+}
+
 fn circ_poly_to_int_poly<F>(p: &[Vec<F>; 2]) -> Result<[Vec<BaseField>; 2], String>
 where
     F: Field + ToBaseField,
@@ -1084,6 +1164,7 @@ where
     Ok([p0, p1])
 }
 
+// TODO: replace with  TryInto<M31>
 pub trait ToBaseField {
     fn to_basefield(&self) -> Result<BaseField, String>;
 }
@@ -1217,9 +1298,9 @@ mod tests {
     use crate::core::channel::MerkleChannel;
     use crate::core::circle::{CirclePoint, CirclePointIndex};
     use crate::core::circle_fft::{
-        add_circ_polys, add_polys, circ_zpoly, eval_circ_poly_at, eval_poly_at, evaluate,
-        get_betas, interpolate, mul_circ_by_const, mul_circ_polys, mul_polys, shift_g_hat,
-        sub_circ_polys, sub_polys, Conj,
+        add_circ_polys, add_polys, circ_lagrange_interp_mixed_vals, circ_zpoly, eval_circ_poly_at,
+        eval_poly_at, evaluate, get_betas, interpolate, mul_circ_by_const, mul_circ_polys,
+        mul_polys, shift_g_hat, sub_circ_polys, sub_polys, Conj,
     };
     use crate::core::fields::m31::{BaseField, M31};
     use crate::core::fields::qm31::{SecureField, QM31};
@@ -2136,6 +2217,82 @@ mod tests {
 
         let res = verifier.verify(queries, values, decommitment);
         assert_eq!(res.is_ok(), true);
+    }
+
+    #[test]
+    fn test_circ_lagrange_interp_mixed_vals() {
+        let g_rs = vec![
+            QM31::from_u32_unchecked(100525368, 1120040569, 1437224214, 1483138964),
+            QM31::from_u32_unchecked(1726297285, 0, 0, 0),
+            QM31::from_u32_unchecked(65628781, 0, 0, 0),
+            QM31::from_u32_unchecked(1920553225, 0, 0, 0),
+            QM31::from_u32_unchecked(1824447909, 0, 0, 0),
+        ];
+
+        let rs = vec![
+            CirclePoint {
+                x: QM31::from_u32_unchecked(1548763524, 442582244, 1635128553, 1064791448),
+                y: QM31::from_u32_unchecked(827705704, 1790486420, 509703195, 416648285),
+            },
+            CirclePoint {
+                x: QM31::from_u32_unchecked(1055058706, 0, 0, 0),
+                y: QM31::from_u32_unchecked(919471560, 0, 0, 0),
+            },
+            CirclePoint {
+                x: QM31::from_u32_unchecked(1923418132, 0, 0, 0),
+                y: QM31::from_u32_unchecked(127044175, 0, 0, 0),
+            },
+            CirclePoint {
+                x: QM31::from_u32_unchecked(1228012087, 0, 0, 0),
+                y: QM31::from_u32_unchecked(1055058706, 0, 0, 0),
+            },
+            CirclePoint {
+                x: QM31::from_u32_unchecked(2147483550, 0, 0, 0),
+                y: QM31::from_u32_unchecked(2005781910, 0, 0, 0),
+            },
+        ];
+
+        let pol = circ_lagrange_interp_mixed_vals(&rs, &g_rs, false, Some(1)).unwrap();
+        assert_eq!(
+            pol,
+            [
+                vec![
+                    BaseField::from(1726327696),
+                    BaseField::from(165658661),
+                    BaseField::from(2123501615),
+                    BaseField::from(60176317),
+                    BaseField::from(2056417527)
+                ],
+                vec![
+                    BaseField::from(700907953),
+                    BaseField::from(1343677810),
+                    BaseField::from(940255665),
+                    BaseField::from(324121053)
+                ]
+            ]
+        );
+
+        let pol2 = circ_lagrange_interp(&rs, &g_rs, false).unwrap();
+        assert_eq!(
+            pol2,
+            [
+                vec![
+                    BaseField::from(1726327696),
+                    BaseField::from(165658661),
+                    BaseField::from(2123501615),
+                    BaseField::from(60176317),
+                    BaseField::from(2056417527)
+                ],
+                vec![
+                    BaseField::from(700907953),
+                    BaseField::from(1343677810),
+                    BaseField::from(940255665),
+                    BaseField::from(324121053)
+                ]
+            ]
+        );
+        // [[1726327696, 165658661, 2123501615, 60176317, 2056417527], [700907953, 1343677810,
+        // 940255665, 324121053]]
     }
 }
 
