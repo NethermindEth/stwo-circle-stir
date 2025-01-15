@@ -17,7 +17,7 @@ use super::fields::qm31::{SecureField, QM31};
 use super::fields::{Field, FieldExpOps};
 use super::poly::circle::{CircleDomain, CircleEvaluation, CirclePoly};
 use super::poly::NaturalOrder;
-use super::simple_merkle::{BatchMerkleProof, SimpleMerkleTree};
+use super::simple_merkle::{verify_many_proof, MerkleProof, SimpleMerkleTree};
 use super::vcs::ops::MerkleHasher;
 use super::vcs::prover::{MerkleDecommitment, MerkleProver};
 use crate::core::fields::ComplexConjugate;
@@ -325,7 +325,7 @@ fn open_merkle_tree2<B: BackendForChannel<MC>, MC: MerkleChannel>(
     eval_size: usize,
     tree: SimpleMerkleTree<B, MC::H>,
     vals: &Vec<BaseField>,
-) -> (Vec<BaseField>, BatchMerkleProof<MC::H>) {
+) -> (Vec<BaseField>, Vec<MerkleProof<MC::H>>) {
     let mut queried_index = vec![];
     for j in 0..folding_param {
         for (t, k) in t_shifts.iter().zip(t_conj.iter()) {
@@ -334,17 +334,17 @@ fn open_merkle_tree2<B: BackendForChannel<MC>, MC: MerkleChannel>(
         }
     }
 
-    let proof = tree.generate_batch_proof(&queried_index);
+    let proofs = tree.generate_proofs(&queried_index);
     let queried_values = queried_index.iter().map(|i| vals[*i]).collect::<Vec<_>>();
 
-    (queried_values, proof)
+    (queried_values, proofs)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StirProof<H: MerkleHasher> {
     pub all_betas: Vec<SecureField>,
     pub output_roots: Vec<H::Hash>,
-    pub merkles_proofs: Vec<BatchMerkleProof<H>>,
+    pub merkles_proofs: Vec<Vec<MerkleProof<H>>>,
     pub opened_values: Vec<Vec<BaseField>>,
     pub g_pol_final: Vec<BaseField>,
 }
@@ -374,8 +374,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
 
     let mut vals = values.to_owned();
     // TODO: to check if this is correct
-    let mut merkle_tree_val = vals.iter().map(|x| *x).collect();
-    // let mut merkle_tree: MerkleProver<B, MC::H> = MerkleProver::commit(vec![&merkle_tree_val]);
+    let mut merkle_tree_val = vals.clone();
     let mut merkle_tree = SimpleMerkleTree::<B, MC::H>::new(&vals);
     output_roots.push(merkle_tree.root());
 
@@ -464,19 +463,20 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
             &r_outs, &betas, &t_shifts, &t_conj, &coset2, p_offset, &g_hat, folded_len,
         );
 
-        let (queried_values, proof) = open_merkle_tree2(
+        let (queried_values, proofs) = open_merkle_tree2(
             folding_params[i - 1],
             &t_shifts,
             &t_conj,
             folded_len,
             eval_sizes[i - 1],
-            merkle_tree,
-            &g_hat_shift.values.to_cpu(),
+            merkle_tree.clone(),
+            &merkle_tree_val,
         );
-        opened_values.push(queried_values);
-        output_merkle_proofs.push(proof);
 
-        merkle_tree_val = g_hat_shift.clone().values;
+        opened_values.push(queried_values);
+        output_merkle_proofs.push(proofs);
+
+        merkle_tree_val = g_hat_shift.clone().values.to_cpu();
         merkle_tree = m2;
 
         vals = fold_val(
@@ -649,9 +649,9 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
         let xs2s = calculate_xs2s(temp_coset2, folding_params[i - 1]);
 
         let output_branch = output_merkle_proofs.remove(0);
-        // let indexes = opened_indexes.remove(0);
         let values = opened_values.remove(0);
-        let verify_res = output_branch.verify(m_root, &values);
+
+        let verify_res = verify_many_proof(&output_branch, m_root, &values);
         if !verify_res {
             return Err("verify proof failed".to_owned());
         }
@@ -745,7 +745,8 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
     // let root = output_roots.remove(0);
     let output_branch = output_merkle_proofs.remove(0);
     let values = opened_values.remove(0);
-    let verify_res = output_branch.verify(m_root, &values);
+
+    let verify_res = verify_many_proof(&output_branch, m_root, &values);
     if !verify_res {
         return Err("verify proof failed".to_owned());
     }
