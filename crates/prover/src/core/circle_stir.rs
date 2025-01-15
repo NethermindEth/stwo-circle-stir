@@ -107,7 +107,7 @@ mod tests {
             &params.eval_offsets,
             log_d as usize,
         );
-        // assert!(verify_res.is_ok());
+        assert!(verify_res.is_ok());
     }
 
     #[test]

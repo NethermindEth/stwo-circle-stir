@@ -327,8 +327,8 @@ fn open_merkle_tree2<B: BackendForChannel<MC>, MC: MerkleChannel>(
     vals: &Vec<BaseField>,
 ) -> (Vec<BaseField>, Vec<MerkleProof<MC::H>>) {
     let mut queried_index = vec![];
-    for j in 0..folding_param {
-        for (t, k) in t_shifts.iter().zip(t_conj.iter()) {
+    for (t, k) in t_shifts.iter().zip(t_conj.iter()) {
+        for j in 0..folding_param {
             let index = (*t as usize) + (j * folded_len) + ((*k as usize) * eval_size);
             queried_index.push(index);
         }
@@ -455,6 +455,13 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
         (r_fold, r_comb, t_vals, t_shifts, t_conj) =
             generate_rnd_r_t_values::<MC>(channel, folded_len, repetition_params[i - 1]);
 
+        println!("r_out: {:?}", r_outs);
+        println!("r_fold: {:?}", r_fold);
+        println!("r_comb: {:?}", r_comb);
+        println!("t_vals: {:?}", t_vals);
+        println!("t_shifts: {:?}", t_shifts);
+        println!("t_conj: {:?}", t_conj);
+
         if repetition_params[i - 1] % 2 != 0 {
             return Err("self.repetition_params[i-1]%2 != 0".to_owned());
         }
@@ -522,6 +529,9 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
         folded_len,
         repetition_params[repetition_params.len() - 1],
     );
+    println!("t_vals: {:?}", t_vals);
+    println!("t_shifts: {:?}", t_shifts);
+    println!("t_conj: {:?}", t_conj);
 
     let (queried_values, proof) = open_merkle_tree2(
         folding_params[folding_params.len() - 1],
@@ -533,6 +543,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
         &merkle_tree_val.to_cpu(),
     );
 
+    let indexes = proof.iter().map(|p| p.indices).collect::<Vec<_>>();
     opened_values.push(queried_values);
     output_merkle_proofs.push(proof);
 
@@ -556,6 +567,7 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
     eval_offsets: &Vec<CirclePointIndex>,
     log_size: usize,
 ) -> Result<(), String> {
+    println!("\nverify_low_degree_proof\n");
     let oods_rep = 1;
     let mut opened_values = proof.opened_values;
     let mut output_roots = proof.output_roots;
@@ -595,6 +607,7 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
     MC::mix_root(channel, m_root);
     let rnd = channel.draw_felt();
     let mut r_fold = M31_CIRCLE_GEN.mul(rnd.0 .0 .0.into());
+    println!("r_fold: {:?}", r_fold);
     let mut r_comb = CirclePoint::<BaseField>::zero();
     let mut rs = vec![];
     let mut zpol = [vec![], vec![]];
@@ -643,6 +656,12 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
         (r_fold_new, r_comb_new, t_vals, t_shifts, t_conj) =
             generate_rnd_r_t_values::<MC>(channel, folded_len, repetition_params[i - 1]);
 
+        println!("r_outs: {:?}", r_outs);
+        println!("r_fold_new: {:?}", r_fold_new);
+        println!("r_comb_new: {:?}", r_comb_new);
+        println!("t_vals: {:?}", t_vals);
+        println!("t_shifts: {:?}", t_shifts);
+        println!("t_conj: {:?}", t_conj);
         let rs_new = calculate_rs(&r_outs, &t_shifts, &t_conj, &coset2, p_offset);
 
         let temp_coset2 = coset.repeated_double(folded_len.ilog2());
@@ -738,6 +757,10 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
         folded_len,
         repetition_params[repetition_params.len() - 1],
     );
+
+    println!("t_vals: {:?}", t_vals);
+    println!("t_shifts: {:?}", t_shifts);
+    println!("t_conj: {:?}", t_conj);
 
     let coset3 = coset.repeated_double(folded_len.ilog2());
     let xs2s = calculate_xs2s(coset3, folding_params[folding_params.len() - 1]);

@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-use std::collections::HashMap;
 use std::marker::PhantomData;
 
 use serde::{Deserialize, Serialize};
@@ -19,8 +18,8 @@ pub struct SimpleMerkleTree<B: MerkleOps<H>, H: MerkleHasher> {
 pub struct MerkleProof<H: MerkleHasher> {
     pub proof: Vec<Vec<H::Hash>>,
     pub positions: Vec<Vec<bool>>,
-    pub indices: Vec<usize>,
-    pub leaves: Vec<H::Hash>,
+    pub indices: usize,
+    pub leaves: H::Hash,
 }
 
 impl<B: MerkleOps<H>, H: MerkleHasher> SimpleMerkleTree<B, H> {
@@ -96,82 +95,21 @@ impl<B: MerkleOps<H>, H: MerkleHasher> SimpleMerkleTree<B, H> {
         MerkleProof {
             proof,
             positions,
-            indices: vec![index],
-            leaves: vec![self.nodes[0][index]],
-        }
-    }
-
-    pub fn generate_batch_proof(&self, indices: &[usize]) -> MerkleProof<H> {
-        let mut proof = Vec::new();
-        let mut positions = Vec::new();
-
-        // Track unique indices while preserving order of first occurrence
-        let mut seen = HashMap::new();
-        let mut unique_indices: Vec<usize> = Vec::new();
-        for (i, &idx) in indices.iter().enumerate() {
-            if !seen.contains_key(&idx) {
-                seen.insert(idx, i);
-                unique_indices.push(idx);
-            }
-        }
-
-        let mut current_indices = unique_indices;
-        let mut used_indices = vec![false; self.leaves.len()];
-
-        for &idx in &current_indices {
-            used_indices[idx] = true;
-        }
-
-        for level in 0..self.nodes.len() - 1 {
-            let mut level_proof = Vec::new();
-            let mut level_positions = vec![false; indices.len()];
-            let mut next_indices = Vec::new();
-            let mut processed = vec![false; self.nodes[level].len()];
-
-            for &idx in &current_indices {
-                if processed[idx] {
-                    continue;
-                }
-                processed[idx] = true;
-
-                let sibling_idx = if idx % 2 == 0 { idx + 1 } else { idx - 1 };
-
-                if sibling_idx < self.nodes[level].len() && !processed[sibling_idx] {
-                    level_proof.push(self.nodes[level][sibling_idx]);
-                    // Set position for all occurrences of this index
-                    for (orig_idx, &orig_pos) in indices.iter().enumerate() {
-                        if orig_pos == idx {
-                            level_positions[orig_idx] = idx % 2 == 0;
-                        }
-                    }
-                }
-
-                next_indices.push(idx / 2);
-            }
-
-            proof.push(level_proof);
-            positions.push(level_positions);
-            current_indices = next_indices;
-        }
-
-        MerkleProof::<H> {
-            proof,
-            positions,
-            indices: indices.to_vec(),
-            leaves: indices.iter().map(|&i| self.leaves[i]).collect(),
+            indices: index,
+            leaves: self.nodes[0][index],
         }
     }
 }
 
 impl<H: MerkleHasher> MerkleProof<H> {
     pub fn verify(&self, root: H::Hash, value: BaseField) -> bool {
-        let mut current_leaf = self.leaves[0];
+        let mut current_leaf = self.leaves;
 
         if H::hash(value) != current_leaf {
             return false;
         }
 
-        let mut current_indices = self.indices[0];
+        let mut current_indices = self.indices;
         for layer in self.proof.iter() {
             let sibling_idx = if current_indices % 2 == 0 {
                 current_indices + 1
