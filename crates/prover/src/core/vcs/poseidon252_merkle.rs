@@ -1,6 +1,6 @@
 use num_traits::Zero;
 use serde::{Deserialize, Serialize};
-use starknet_crypto::{poseidon_hash, poseidon_hash_many};
+use starknet_crypto::{poseidon_hash, poseidon_hash_many, poseidon_hash_single};
 use starknet_ff::FieldElement as FieldElement252;
 
 use super::ops::MerkleHasher;
@@ -41,6 +41,16 @@ impl MerkleHasher for Poseidon252MerkleHasher {
             values.push(word);
         }
         poseidon_hash_many(&values)
+    }
+
+    fn hash(data: BaseField) -> Self::Hash {
+        let mut data_bytes = data.0.to_le_bytes().to_vec();
+        data_bytes.resize(32, 0);
+        data_bytes.reverse();
+        let d: [u8; 32] = data_bytes.try_into().unwrap();
+        let fe = FieldElement252::from_bytes_be(&d).unwrap();
+        let hash = poseidon_hash_single(fe);
+        hash
     }
 }
 

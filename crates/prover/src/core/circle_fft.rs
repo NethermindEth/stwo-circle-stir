@@ -17,9 +17,9 @@ use super::fields::qm31::{SecureField, QM31};
 use super::fields::{Field, FieldExpOps};
 use super::poly::circle::{CircleDomain, CircleEvaluation, CirclePoly};
 use super::poly::NaturalOrder;
+use super::simple_merkle::{BatchMerkleProof, SimpleMerkleTree};
 use super::vcs::ops::MerkleHasher;
 use super::vcs::prover::{MerkleDecommitment, MerkleProver};
-use super::vcs::verifier::MerkleVerifier;
 use crate::core::fields::ComplexConjugate;
 
 pub fn calculate_xs2s(coset: Coset, folding_param: usize) -> [Vec<CirclePointIndex>; 2] {
@@ -285,6 +285,7 @@ pub fn fold_val(
     vals
 }
 
+#[allow(dead_code)]
 fn open_merkle_tree<B: BackendForChannel<MC>, MC: MerkleChannel>(
     folding_param: usize,
     t_shifts: &Vec<u32>,
@@ -316,15 +317,36 @@ fn open_merkle_tree<B: BackendForChannel<MC>, MC: MerkleChannel>(
     (queried_index, values, decommitment)
 }
 
+fn open_merkle_tree2<B: BackendForChannel<MC>, MC: MerkleChannel>(
+    folding_param: usize,
+    t_shifts: &Vec<u32>,
+    t_conj: &Vec<u32>,
+    folded_len: usize,
+    eval_size: usize,
+    tree: SimpleMerkleTree<B, MC::H>,
+    vals: &Vec<BaseField>,
+) -> (Vec<BaseField>, BatchMerkleProof<MC::H>) {
+    let mut queried_index = vec![];
+    for j in 0..folding_param {
+        for (t, k) in t_shifts.iter().zip(t_conj.iter()) {
+            let index = (*t as usize) + (j * folded_len) + ((*k as usize) * eval_size);
+            queried_index.push(index);
+        }
+    }
+
+    let proof = tree.generate_batch_proof(&queried_index);
+    let queried_values = queried_index.iter().map(|i| vals[*i]).collect::<Vec<_>>();
+
+    (queried_values, proof)
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StirProof<H: MerkleHasher> {
     pub all_betas: Vec<SecureField>,
     pub output_roots: Vec<H::Hash>,
-    pub output_branches: Vec<MerkleDecommitment<H>>,
-    pub opened_indexes: Vec<Vec<usize>>,
-    pub opened_values: Vec<Vec<Vec<BaseField>>>,
+    pub merkles_proofs: Vec<BatchMerkleProof<H>>,
+    pub opened_values: Vec<Vec<BaseField>>,
     pub g_pol_final: Vec<BaseField>,
-    pub merkle_tree_log_sizes: Vec<u32>,
 }
 
 pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
@@ -341,10 +363,8 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
     let ood_rep = 1;
     let mut output_roots = vec![];
     let mut all_betas = vec![];
-    let mut output_branches = vec![];
-    let mut opened_indexes = vec![];
+    let mut output_merkle_proofs = vec![];
     let mut opened_values = vec![];
-    let mut merkle_tree_log_sizes = vec![];
 
     let mut xs = calculate_xs(&coset, eval_offsets[0]);
 
@@ -355,9 +375,9 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
     let mut vals = values.to_owned();
     // TODO: to check if this is correct
     let mut merkle_tree_val = vals.iter().map(|x| *x).collect();
-    let mut merkle_tree: MerkleProver<B, MC::H> = MerkleProver::commit(vec![&merkle_tree_val]);
+    // let mut merkle_tree: MerkleProver<B, MC::H> = MerkleProver::commit(vec![&merkle_tree_val]);
+    let mut merkle_tree = SimpleMerkleTree::<B, MC::H>::new(&vals);
     output_roots.push(merkle_tree.root());
-    merkle_tree_log_sizes.push(merkle_tree_val.len().ilog2());
 
     MC::mix_root(channel, merkle_tree.root());
 
@@ -410,9 +430,9 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
         let g_hat_shift =
             shift_g_hat::<B, MC>(&g_hat, coset, expand_factor, p_offset, eval_offsets[i]);
 
-        let m2: MerkleProver<B, MC::H> = MerkleProver::commit(vec![&g_hat_shift.values]);
+        // let m2: MerkleProver<B, MC::H> = MerkleProver::commit(vec![&g_hat_shift.values]);
+        let m2 = SimpleMerkleTree::<B, MC::H>::new(&g_hat_shift.values.to_cpu());
         output_roots.push(m2.root());
-        merkle_tree_log_sizes.push(g_hat_shift.values.len().ilog2() as u32);
 
         MC::mix_root(channel, m2.root());
 
@@ -444,18 +464,17 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
             &r_outs, &betas, &t_shifts, &t_conj, &coset2, p_offset, &g_hat, folded_len,
         );
 
-        let (queried_index, opened_vals, decommitment) = open_merkle_tree(
+        let (queried_values, proof) = open_merkle_tree2(
             folding_params[i - 1],
             &t_shifts,
             &t_conj,
             folded_len,
             eval_sizes[i - 1],
-            &merkle_tree_val,
-            &merkle_tree,
+            merkle_tree,
+            &g_hat_shift.values.to_cpu(),
         );
-        opened_indexes.push(queried_index);
-        opened_values.push(opened_vals);
-        output_branches.push(decommitment);
+        opened_values.push(queried_values);
+        output_merkle_proofs.push(proof);
 
         merkle_tree_val = g_hat_shift.clone().values;
         merkle_tree = m2;
@@ -504,25 +523,23 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
         repetition_params[repetition_params.len() - 1],
     );
 
-    let (queried_index, opened_vals, decommitment) = open_merkle_tree(
+    let (queried_values, proof) = open_merkle_tree2(
         folding_params[folding_params.len() - 1],
         &t_shifts,
         &t_conj,
         folded_len,
         eval_sizes[folding_params.len() - 1],
-        &merkle_tree_val,
-        &merkle_tree,
+        merkle_tree,
+        &merkle_tree_val.to_cpu(),
     );
-    opened_indexes.push(queried_index);
-    opened_values.push(opened_vals);
-    output_branches.push(decommitment);
+
+    opened_values.push(queried_values);
+    output_merkle_proofs.push(proof);
 
     Ok(StirProof {
         all_betas,
         output_roots,
-        merkle_tree_log_sizes,
-        output_branches,
-        opened_indexes,
+        merkles_proofs: output_merkle_proofs,
         opened_values,
         g_pol_final: g_pol_final.to_vec(),
     })
@@ -540,11 +557,9 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
     log_size: usize,
 ) -> Result<(), String> {
     let oods_rep = 1;
-    let mut opened_indexes = proof.opened_indexes;
     let mut opened_values = proof.opened_values;
     let mut output_roots = proof.output_roots;
-    let mut output_branches = proof.output_branches;
-    let mut merkle_tree_log_sizes = proof.merkle_tree_log_sizes;
+    let mut output_merkle_proofs = proof.merkles_proofs;
     let mut all_betas = proof.all_betas;
     let mut log_size = log_size;
     let maxdeg_plus_1 = 1 << log_size;
@@ -633,25 +648,15 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
         let temp_coset2 = coset.repeated_double(folded_len.ilog2());
         let xs2s = calculate_xs2s(temp_coset2, folding_params[i - 1]);
 
-        let output_branch = output_branches.remove(0);
-        let indexes = opened_indexes.remove(0);
+        let output_branch = output_merkle_proofs.remove(0);
+        // let indexes = opened_indexes.remove(0);
         let values = opened_values.remove(0);
-        let merkle_tree_log_size = merkle_tree_log_sizes.remove(0);
-
-        let verifier = MerkleVerifier::<MC::H> {
-            root: m_root,
-            column_log_sizes: vec![merkle_tree_log_size as u32],
-        };
-
-        let mut queries = BTreeMap::<u32, Vec<usize>>::new();
-        queries.insert(merkle_tree_log_size, indexes);
-
-        let verify_res = verifier.verify(queries, values.clone(), output_branch.clone());
-        if !verify_res.is_ok() {
-            return Err("!verify_res.is_ok()".to_owned());
+        let verify_res = output_branch.verify(m_root, &values);
+        if !verify_res {
+            return Err("verify proof failed".to_owned());
         }
 
-        let mut vals = &values[0];
+        let mut vals = values;
 
         let mut g_hat = vec![];
 
@@ -738,25 +743,14 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
     let xs2s = calculate_xs2s(coset3, folding_params[folding_params.len() - 1]);
 
     // let root = output_roots.remove(0);
-    let output_branch = output_branches.remove(0);
-    let indexes = opened_indexes.remove(0);
+    let output_branch = output_merkle_proofs.remove(0);
     let values = opened_values.remove(0);
-    let merkle_tree_log_size = merkle_tree_log_sizes.remove(0);
-
-    let verifier = MerkleVerifier::<MC::H> {
-        root: m_root,
-        column_log_sizes: vec![merkle_tree_log_size as u32],
-    };
-
-    let mut queries = BTreeMap::<u32, Vec<usize>>::new();
-    queries.insert(merkle_tree_log_size as u32, indexes);
-
-    let verify_res = verifier.verify(queries, values.clone(), output_branch);
-    if !verify_res.is_ok() {
-        return Err("verify_res.is_ok()".to_owned());
+    let verify_res = output_branch.verify(m_root, &values);
+    if !verify_res {
+        return Err("verify proof failed".to_owned());
     }
 
-    let mut vals = &values[0];
+    let mut vals = values;
 
     for (k, val) in (0..repetition_params[repetition_params.len() - 1])
         .zip(vals.chunks(folding_params[folding_params.len() - 1]))

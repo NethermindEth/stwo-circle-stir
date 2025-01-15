@@ -1,7 +1,7 @@
 use num_traits::Zero;
 use serde::{Deserialize, Serialize};
 
-use super::blake2_hash::Blake2sHash;
+use super::blake2_hash::{Blake2sHash, Blake2sHasher};
 use super::blake2s_ref::compress;
 use super::ops::MerkleHasher;
 use crate::core::channel::{Blake2sChannel, MerkleChannel};
@@ -36,6 +36,10 @@ impl MerkleHasher for Blake2sMerkleHasher {
             state = compress(state, unsafe { std::mem::transmute(chunk) }, 0, 0, 0, 0);
         }
         state.map(|x| x.to_le_bytes()).flatten().into()
+    }
+
+    fn hash(data: BaseField) -> Self::Hash {
+        Blake2sHasher::hash(&data.0.to_be_bytes())
     }
 }
 

@@ -20,6 +20,8 @@ pub trait MerkleHasher: Debug + Default + Clone {
         children_hashes: Option<(Self::Hash, Self::Hash)>,
         column_values: &[BaseField],
     ) -> Self::Hash;
+
+    fn hash(data: BaseField) -> Self::Hash;
 }
 
 /// Trait for performing Merkle operations on a commitment scheme.
