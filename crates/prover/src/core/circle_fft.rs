@@ -341,7 +341,7 @@ fn open_merkle_tree2<B: BackendForChannel<MC>, MC: MerkleChannel>(
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct StirProof<H: MerkleHasher> {
+pub struct CircleStirProof<H: MerkleHasher> {
     pub all_betas: Vec<SecureField>,
     pub output_roots: Vec<H::Hash>,
     pub merkles_proofs: Vec<Vec<MerkleProof<H>>>,
@@ -358,7 +358,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
     folding_params: &Vec<usize>,
     values: &Vec<BaseField>,
     eval_offsets: &Vec<CirclePointIndex>,
-) -> Result<StirProof<MC::H>, String> {
+) -> Result<CircleStirProof<MC::H>, String> {
     let mut coset = coset.clone();
     let ood_rep = 1;
     let mut output_roots = vec![];
@@ -547,7 +547,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
     opened_values.push(queried_values);
     output_merkle_proofs.push(proof);
 
-    Ok(StirProof {
+    Ok(CircleStirProof {
         all_betas,
         output_roots,
         merkles_proofs: output_merkle_proofs,
@@ -559,7 +559,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
 #[allow(unused_mut)]
 pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
     channel: &mut MC::C,
-    proof: StirProof<MC::H>,
+    proof: &CircleStirProof<MC::H>,
     coset: &Coset,
     eval_sizes: &Vec<usize>,
     repetition_params: &Vec<usize>,
@@ -569,10 +569,10 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
 ) -> Result<(), String> {
     println!("\nverify_low_degree_proof\n");
     let oods_rep = 1;
-    let mut opened_values = proof.opened_values;
-    let mut output_roots = proof.output_roots;
-    let mut output_merkle_proofs = proof.merkles_proofs;
-    let mut all_betas = proof.all_betas;
+    let mut opened_values = proof.opened_values.clone();
+    let mut output_roots = proof.output_roots.clone();
+    let mut output_merkle_proofs = proof.merkles_proofs.clone();
+    let mut all_betas = proof.all_betas.clone();
     let mut log_size = log_size;
     let maxdeg_plus_1 = 1 << log_size;
 

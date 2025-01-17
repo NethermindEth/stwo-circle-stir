@@ -2,8 +2,15 @@
 #![allow(unused_assignments)]
 #![allow(unused_mut)]
 
+use super::backend::{BackendForChannel, Column};
+use super::channel::MerkleChannel;
 use super::circle::{CirclePointIndex, Coset};
-use super::poly::circle::CanonicCoset;
+use super::circle_fft::{evaluate, prove_low_degree, verify_low_degree_proof, CircleStirProof};
+use super::poly::circle::{CanonicCoset, SecureCirclePoly};
+use super::vcs::ops::MerkleHasher;
+
+pub const LOG_STOPPING_DEGREE: u32 = 1;
+pub const LOG_FOLDING_PARAM: u32 = 2;
 
 pub struct CircleStirParams {
     pub coset: Coset,
@@ -15,19 +22,78 @@ pub struct CircleStirParams {
     pub ood_rep: u32,
 }
 
+pub struct CircleStirSecureFieldProof<H: MerkleHasher> {
+    pub proofs: Vec<CircleStirProof<H>>,
+    pub log_ds: Vec<u32>,
+}
+
+pub fn prove_circle_stir_secure_poly<B: BackendForChannel<MC>, MC: MerkleChannel>(
+    secure_circle_poly: SecureCirclePoly<B>,
+) -> CircleStirSecureFieldProof<MC::H> {
+    let mut proofs = vec![];
+    let mut log_ds = vec![];
+
+    for poly in secure_circle_poly.0 {
+        let log_d = poly.log_size() - 1;
+        let params = generate_proving_params(log_d, LOG_STOPPING_DEGREE, LOG_FOLDING_PARAM);
+        let evaluate = evaluate(poly, &params.coset, CirclePointIndex(1));
+        let prover_channel = &mut MC::C::default();
+
+        let proof = prove_low_degree::<B, MC>(
+            prover_channel,
+            &params.coset,
+            &params.eval_sizes,
+            params.maxdeg_plus_1,
+            &params.repetition_params,
+            &params.folding_params,
+            &evaluate.values.to_cpu(),
+            &params.eval_offsets,
+        )
+        .unwrap();
+
+        proofs.push(proof);
+        log_ds.push(log_d);
+    }
+
+    CircleStirSecureFieldProof { proofs, log_ds }
+}
+
+pub fn verify_circle_stir_secure_poly<B: BackendForChannel<MC>, MC: MerkleChannel>(
+    proof: CircleStirSecureFieldProof<MC::H>,
+) -> bool {
+    let proofs = proof.proofs;
+    let log_ds = proof.log_ds;
+    let mut results = vec![];
+
+    for (proof, &log_d) in proofs.iter().zip(log_ds.iter()) {
+        let verify_channel = &mut MC::C::default();
+        let params = generate_proving_params(log_d, LOG_STOPPING_DEGREE, LOG_FOLDING_PARAM);
+        let verify_res = verify_low_degree_proof::<B, MC>(
+            verify_channel,
+            proof,
+            &params.coset,
+            &params.eval_sizes,
+            &params.repetition_params,
+            &params.folding_params,
+            &params.eval_offsets,
+            log_d as usize,
+        );
+        results.push(verify_res);
+    }
+
+    results.iter().all(|x| x.is_ok())
+}
+
 pub fn generate_proving_params(
     log_d: u32,
     log_stopping_degree: u32,
     log_folding_param: u32,
-    // security_param: usize,
-    // proximity_param: usize,
 ) -> CircleStirParams {
     let coset = CanonicCoset::new(log_d + 2).coset;
     let init_offset: CirclePointIndex = CirclePointIndex(1);
 
     let m = ((log_d - log_stopping_degree) / log_folding_param) as usize;
     let size_l = coset.size();
-    // assert!(0 < proximity_param <= 1);
 
     let mut eval_sizes = vec![size_l];
     let mut eval_offsets = vec![init_offset];
@@ -99,7 +165,7 @@ mod tests {
         let verify_channel = &mut Blake2sChannel::default();
         let verify_res = verify_low_degree_proof::<CpuBackend, Blake2sMerkleChannel>(
             verify_channel,
-            proof_res,
+            &proof_res,
             &params.coset,
             &params.eval_sizes,
             &params.repetition_params,
