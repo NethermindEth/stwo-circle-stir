@@ -170,7 +170,6 @@ mod tests {
         let proofs = tree.generate_proofs(&indices);
 
         let opened_values = indices.iter().map(|&i| values[i]).collect::<Vec<_>>();
-        println!("opened_values: {:?}", opened_values);
 
         assert!(verify_many_proof(&proofs, root, &opened_values));
         // assert!(proof.verify(root, &opened_values));
@@ -318,7 +317,6 @@ mod tests {
         let proofs = tree.generate_proofs(&indices);
 
         let opened_values = indices.iter().map(|&i| values[i]).collect::<Vec<_>>();
-        println!("opened_values: {:?}", opened_values);
 
         assert!(verify_many_proof(&proofs, root, &opened_values));
     }

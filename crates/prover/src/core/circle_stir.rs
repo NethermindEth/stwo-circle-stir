@@ -161,7 +161,6 @@ mod tests {
         )
         .unwrap();
 
-        // println!("proof_res: {:?}", proof_res);
         let verify_channel = &mut Blake2sChannel::default();
         let verify_res = verify_low_degree_proof::<CpuBackend, Blake2sMerkleChannel>(
             verify_channel,

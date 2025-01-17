@@ -87,7 +87,7 @@ mod tests {
     use crate::core::pcs::{CommitmentSchemeProver, CommitmentSchemeVerifier, PcsConfig, TreeVec};
     use crate::core::poly::circle::{CanonicCoset, CircleEvaluation, PolyOps};
     use crate::core::poly::BitReversedOrder;
-    use crate::core::prover::{prove, verify};
+    use crate::core::prover::{prove, prove_circle_stir, verify, verify_circle_stir};
     use crate::core::vcs::blake2_merkle::Blake2sMerkleChannel;
     #[cfg(not(target_arch = "wasm32"))]
     use crate::core::vcs::poseidon252_merkle::Poseidon252MerkleChannel;
@@ -216,6 +216,48 @@ mod tests {
             commitment_scheme.commit(proof.commitments[0], &sizes[0], verifier_channel);
             verify(&[&component], verifier_channel, commitment_scheme, proof).unwrap();
         }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn test_wide_fib_prove_with_blake_circle_stir() {
+        let log_n_instances = 4;
+        let config = PcsConfig::default();
+        // Precompute twiddles.
+        let twiddles = SimdBackend::precompute_twiddles(
+            CanonicCoset::new(log_n_instances + 1 + config.fri_config.log_blowup_factor)
+                .circle_domain()
+                .half_coset,
+        );
+        let prover_channel = &mut Blake2sChannel::default();
+        let commitment_scheme =
+            &mut CommitmentSchemeProver::<SimdBackend, Blake2sMerkleChannel>::new(
+                config, &twiddles,
+            );
+
+        // Trace.
+        let trace = generate_test_trace(log_n_instances);
+        let mut tree_builder = commitment_scheme.tree_builder();
+        tree_builder.extend_evals(trace);
+        tree_builder.commit(prover_channel);
+
+        // Prove constraints.
+        let component = WideFibonacciComponent::new(
+            &mut TraceLocationAllocator::default(),
+            WideFibonacciEval::<FIB_SEQUENCE_LENGTH> {
+                log_n_rows: log_n_instances,
+            },
+        );
+
+        let proof = prove_circle_stir::<SimdBackend, Blake2sMerkleChannel>(
+            &[&component],
+            prover_channel,
+            commitment_scheme,
+        )
+        .unwrap();
+
+        let verify_res = verify_circle_stir::<SimdBackend, Blake2sMerkleChannel>(proof);
+        assert!(verify_res);
     }
 
     #[test]
