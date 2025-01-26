@@ -92,7 +92,8 @@ pub fn generate_proving_params(
     let coset = CanonicCoset::new(log_d + 2).coset;
     let init_offset: CirclePointIndex = CirclePointIndex(1);
 
-    let m = ((log_d - log_stopping_degree) / log_folding_param) as usize;
+    let m = ((log_d - log_stopping_degree) as f64 / log_folding_param as f64).ceil() as usize - 1;
+
     let size_l = coset.size();
 
     let mut eval_sizes = vec![size_l];
