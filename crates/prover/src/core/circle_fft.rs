@@ -1,13 +1,13 @@
 #![allow(unused_variables)]
 #![allow(unused_assignments)]
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::vec;
 
 use num_traits::Zero;
 use serde::{Deserialize, Serialize};
 
-use super::backend::{BackendForChannel, Column, ColumnOps};
+use super::backend::{BackendForChannel, Column};
 use super::channel::{Channel, MerkleChannel};
 use super::circle::{CirclePoint, CirclePointIndex, Coset, M31_CIRCLE_GEN};
 use super::fields::m31::{BaseField, M31, P};
@@ -17,7 +17,6 @@ use super::poly::circle::{CircleDomain, CircleEvaluation, CirclePoly};
 use super::poly::NaturalOrder;
 use super::simple_merkle::{verify_many_proof, MerkleProof, SimpleMerkleTree};
 use super::vcs::ops::MerkleHasher;
-use super::vcs::prover::{MerkleDecommitment, MerkleProver};
 
 pub fn calculate_xs2s(coset: Coset, folding_param: usize) -> [Vec<CirclePointIndex>; 2] {
     let mut xs2s: [Vec<CirclePointIndex>; 2] = [vec![], vec![]];
@@ -283,39 +282,7 @@ pub fn fold_val(
     vals
 }
 
-#[allow(dead_code)]
 fn open_merkle_tree<B: BackendForChannel<MC>, MC: MerkleChannel>(
-    folding_param: usize,
-    t_shifts: &Vec<u32>,
-    t_conj: &Vec<u32>,
-    folded_len: usize,
-    eval_size: usize,
-    merkle_tree_val: &<B as ColumnOps<M31>>::Column,
-    merkle_tree: &MerkleProver<B, MC::H>,
-) -> (
-    Vec<usize>,
-    Vec<Vec<BaseField>>,
-    MerkleDecommitment<<MC as MerkleChannel>::H>,
-) {
-    let mut queried_index = vec![];
-    for j in 0..folding_param {
-        for (t, k) in t_shifts.iter().zip(t_conj.iter()) {
-            let index = (*t as usize) + (j * folded_len) + ((*k as usize) * eval_size);
-            queried_index.push(index);
-        }
-    }
-    queried_index.sort();
-    queried_index.dedup();
-
-    let mut queries = BTreeMap::<u32, Vec<usize>>::new();
-    queries.insert(merkle_tree_val.len().ilog2(), queried_index.clone());
-
-    let (values, decommitment) = merkle_tree.decommit(queries.clone(), vec![merkle_tree_val]);
-
-    (queried_index, values, decommitment)
-}
-
-fn open_merkle_tree2<B: BackendForChannel<MC>, MC: MerkleChannel>(
     folding_param: usize,
     t_shifts: &Vec<u32>,
     t_conj: &Vec<u32>,
@@ -461,7 +428,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
             &r_outs, &betas, &t_shifts, &t_conj, &coset2, p_offset, &g_hat, folded_len,
         );
 
-        let (queried_values, proofs) = open_merkle_tree2(
+        let (queried_values, proofs) = open_merkle_tree(
             folding_params[i - 1],
             &t_shifts,
             &t_conj,
@@ -521,7 +488,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
         repetition_params[repetition_params.len() - 1],
     );
 
-    let (queried_values, proof) = open_merkle_tree2(
+    let (queried_values, proof) = open_merkle_tree(
         folding_params[folding_params.len() - 1],
         &t_shifts,
         &t_conj,
