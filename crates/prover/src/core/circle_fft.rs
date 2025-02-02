@@ -775,27 +775,6 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
     Ok(())
 }
 
-pub trait Conj {
-    fn conj(&self) -> Self;
-}
-
-impl Conj for CirclePointIndex {
-    fn conj(&self) -> Self {
-        let conj_index: u32 = (P + 1) - (self.0) as u32;
-        // Self((P - self.0).try_into().unwrap())
-        Self(conj_index as usize)
-    }
-}
-
-impl CirclePoint<BaseField> {
-    fn mul_circle_point(self, rhs: CirclePoint<BaseField>) -> Self {
-        Self {
-            x: self.x * rhs.x - self.y * rhs.y,
-            y: self.x * rhs.y + self.y * rhs.x,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -804,7 +783,7 @@ mod tests {
     use crate::core::backend::CpuBackend;
     use crate::core::channel::MerkleChannel;
     use crate::core::circle::{CirclePoint, CirclePointIndex};
-    use crate::core::circle_fft::{evaluate, get_betas, interpolate, shift_g_hat, Conj};
+    use crate::core::circle_fft::{evaluate, get_betas, interpolate, shift_g_hat};
     use crate::core::fields::m31::{BaseField, M31};
     use crate::core::fields::qm31::{SecureField, QM31};
     use crate::core::fields::{

@@ -128,7 +128,7 @@ mod tests {
     use crate::core::circle_fft::{
         calculate_g_hat, calculate_rs, calculate_rs_and_g_rs, calculate_xs, calculate_xs2s,
         evaluate, fold_val, get_betas, interpolate, prove_low_degree, shift_g_hat,
-        verify_low_degree_proof, Conj,
+        verify_low_degree_proof,
     };
     use crate::core::fields::m31::BaseField;
     use crate::core::fields::qm31::{SecureField, QM31};
