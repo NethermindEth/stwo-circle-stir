@@ -14,7 +14,7 @@ use super::circle::{CirclePoint, CirclePointIndex, Coset, M31_CIRCLE_GEN};
 use super::fields::cm31::CM31;
 use super::fields::m31::{BaseField, M31, P};
 use super::fields::qm31::{SecureField, QM31};
-use super::fields::{Field, FieldExpOps};
+use super::fields::{Field, FieldCircPolyOps, FieldExpOps};
 use super::poly::circle::{CircleDomain, CircleEvaluation, CirclePoly};
 use super::poly::NaturalOrder;
 use super::simple_merkle::{verify_many_proof, MerkleProof, SimpleMerkleTree};
@@ -81,7 +81,7 @@ pub fn calculate_g_hat(
             let polys = &x_polys[k + folded_len * l];
             let point = r_fold.mul_circle_point(xs[k + eval_size * l].to_point().conjugate());
 
-            let eval = eval_circ_poly_at(&polys, &point);
+            let eval = polys.eval_circ_poly_at(&point);
             g_hat.push(eval);
         }
     }
@@ -274,7 +274,7 @@ pub fn fold_val(
     for j in 0..2 * eval_size {
         let zzz: M31 = g_hat_shift.at(j);
         let aaa = pol_vals[j];
-        let denom = eval_circ_poly_at(&zpol, &xs[j].to_point());
+        let denom = zpol.eval_circ_poly_at(&xs[j].to_point());
         let a = (zzz - aaa) / denom;
 
         let geom_sum_res = ((xs[j].to_point() + r_comb).x).geom_sum(rs.len());
@@ -878,7 +878,6 @@ pub fn eval_poly_at<F: Field>(poly: &Vec<F>, pt: &F) -> F {
     let mut y = F::zero();
     let mut power_of_x = F::one();
 
-    let poly2 = poly.clone();
     let pt2 = pt.clone();
 
     for coeff in poly.iter() {
@@ -1833,10 +1832,26 @@ mod tests {
     }
 
     #[test]
+    fn test_eval_poly_at2() {
+        let poly = vec![M31(1), M31(2), M31(3)];
+        let pt = M31(2);
+        let res = poly.eval_poly_at(&pt);
+        assert_eq!(res, M31(17));
+    }
+
+    #[test]
     fn test_eval_circ_poly_at() {
         let poly = [vec![M31(1), M31(2), M31(3)], vec![M31(4), M31(5), M31(6)]];
         let pt = CirclePointIndex(1).to_point();
         let res = eval_circ_poly_at(&poly, &pt);
+        assert_eq!(res, M31(939809057));
+    }
+
+    #[test]
+    fn test_eval_circ_poly_at2() {
+        let poly = [vec![M31(1), M31(2), M31(3)], vec![M31(4), M31(5), M31(6)]];
+        let pt = CirclePointIndex(1).to_point();
+        let res = poly.eval_circ_poly_at(&pt);
         assert_eq!(res, M31(939809057));
     }
 

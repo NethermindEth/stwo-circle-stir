@@ -5,6 +5,7 @@ use std::ops::{Mul, MulAssign, Neg};
 use num_traits::{NumAssign, NumAssignOps, NumOps, One};
 
 use super::backend::ColumnOps;
+use super::circle::CirclePoint;
 
 pub mod cm31;
 pub mod m31;
@@ -23,6 +24,9 @@ pub trait FieldPolyOps {
     fn add_polys(&self, other: &Self) -> Self;
     fn sub_polys(&self, other: &Self) -> Self;
     fn mul_poly_by_const(&self, constant: &Self::Field) -> Self;
+
+    // Evaluate a polynomial at a point
+    fn eval_poly_at(&self, pt: &Self::Field) -> Self::Field;
 }
 
 pub trait FieldCircPolyOps {
@@ -32,6 +36,8 @@ pub trait FieldCircPolyOps {
     fn add_circ_polys(&self, other: &Self) -> Self;
     fn sub_circ_polys(&self, other: &Self) -> Self;
     fn mul_circ_by_const(&self, constant: &Self::Field) -> Self;
+
+    fn eval_circ_poly_at(&self, point: &CirclePoint<Self::Field>) -> Self::Field;
 }
 
 pub trait FieldExpOps: Mul<Output = Self> + MulAssign + Sized + One + Clone {
@@ -198,8 +204,8 @@ macro_rules! impl_field {
 
         use itertools::max;
         use num_traits::{Num, One, Zero};
+        use $crate::core::circle::CirclePoint;
         use $crate::core::fields::{Field, FieldCircPolyOps, FieldPolyOps};
-
         impl Num for $field_name {
             type FromStrRadixErr = Box<dyn std::error::Error>;
 
@@ -276,6 +282,18 @@ macro_rules! impl_field {
             fn mul_poly_by_const(&self, constant: &Self::Field) -> Self {
                 self.iter().map(|coeff| *coeff * *constant).collect()
             }
+
+            fn eval_poly_at(&self, pt: &Self::Field) -> Self::Field {
+                let mut y = Self::Field::zero();
+                let mut power_of_x = Self::Field::one();
+
+                for coeff in self.iter() {
+                    y += power_of_x * *coeff;
+                    power_of_x = power_of_x * *pt;
+                }
+
+                y
+            }
         }
 
         impl FieldCircPolyOps for [Vec<$field_name>; 2] {
@@ -311,6 +329,9 @@ macro_rules! impl_field {
                     self[0].mul_poly_by_const(&constant),
                     self[1].mul_poly_by_const(&constant),
                 ]
+            }
+            fn eval_circ_poly_at(&self, point: &CirclePoint<Self::Field>) -> Self::Field {
+                self[0].eval_poly_at(&point.x) + self[1].eval_poly_at(&point.x) * point.y
             }
         }
 
