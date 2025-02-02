@@ -132,6 +132,7 @@ mod tests {
     };
     use crate::core::fields::m31::BaseField;
     use crate::core::fields::qm31::{SecureField, QM31};
+    use crate::core::fields::Field;
     use crate::core::poly::circle::CirclePoly;
     use crate::core::vcs::blake2_merkle::Blake2sMerkleChannel;
 
@@ -482,7 +483,7 @@ mod tests {
                         let d = (*v - eval_circ_poly_at(&pol, &x.to_point()))
                             / eval_circ_poly_at(&zpol, &x.to_secure_field_point());
 
-                        let m = d.0 .0 * geom_sum((x.to_point() + r_comb).x, rs.len());
+                        let m = d.0 .0 * ((x.to_point() + r_comb).x).geom_sum(rs.len());
                         v_s.push(m);
                     }
                 } else {
@@ -638,7 +639,7 @@ mod tests {
                 let d = (*v - eval_circ_poly_at(&pol, &x.to_point()))
                     / eval_circ_poly_at(&zpol, &x.to_secure_field_point());
 
-                let m = d.0 .0 * geom_sum((x.to_point() + r_comb).x, rs.len());
+                let m = d.0 .0 * ((x.to_point() + r_comb).x).geom_sum(rs.len());
                 v_s.push(m);
             }
 
@@ -807,7 +808,7 @@ mod tests {
                         let d = (*v - eval_circ_poly_at(&pol, &x.to_point()))
                             / eval_circ_poly_at(&zpol, &x.to_secure_field_point());
 
-                        let m = d.0 .0 * geom_sum((x.to_point() + r_comb).x, rs.len());
+                        let m = d.0 .0 * ((x.to_point() + r_comb).x).geom_sum(rs.len());
                         v_s.push(m);
                     }
                 } else {
@@ -905,7 +906,7 @@ mod tests {
                 let d = (*v - eval_circ_poly_at(&pol, &x.to_point()))
                     / eval_circ_poly_at(&zpol, &x.to_secure_field_point());
 
-                let m = d.0 .0 * geom_sum((x.to_point() + r_comb).x, rs.len());
+                let m = d.0 .0 * ((x.to_point() + r_comb).x).geom_sum(rs.len());
                 v_s.push(m);
             }
 

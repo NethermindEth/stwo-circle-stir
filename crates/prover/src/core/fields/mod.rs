@@ -133,6 +133,18 @@ pub trait Field:
     fn double(&self) -> Self {
         *self + *self
     }
+
+    fn geom_sum(&self, p: usize) -> Self {
+        let mut ans = Self::one();
+        let mut prod = Self::one();
+
+        for _ in 0..p {
+            prod = prod * *self;
+            ans = ans + prod;
+        }
+
+        ans
+    }
 }
 
 /// # Safety

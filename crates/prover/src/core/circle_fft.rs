@@ -277,7 +277,8 @@ pub fn fold_val(
         let denom = eval_circ_poly_at(&zpol, &xs[j].to_point());
         let a = (zzz - aaa) / denom;
 
-        let geom_sum_res = geom_sum((xs[j].to_point() + r_comb).x, rs.len()); // yyyy is M31
+        let geom_sum_res = ((xs[j].to_point() + r_comb).x).geom_sum(rs.len());
+
         let val = a * geom_sum_res;
         vals.push(val);
     }
@@ -680,7 +681,7 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
                     let d = (*v - eval_circ_poly_at(&pol, &x.to_point()))
                         / eval_circ_poly_at(&zpol, &x.to_secure_field_point());
 
-                    let m = d.0 .0 * geom_sum((x.to_point() + r_comb).x, rs.len());
+                    let m = d.0 .0 * ((x.to_point() + r_comb).x).geom_sum(rs.len());
                     v_s.push(m);
                 }
             } else {
@@ -775,7 +776,7 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
             let d = (*v - eval_circ_poly_at(&pol, &x.to_point()))
                 / eval_circ_poly_at(&zpol, &x.to_secure_field_point());
 
-            let m = d.0 .0 * geom_sum((x.to_point() + r_comb).x, rs.len());
+            let m = d.0 .0 * ((x.to_point() + r_comb).x).geom_sum(rs.len());
             v_s.push(m);
         }
 
