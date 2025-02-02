@@ -265,7 +265,7 @@ pub fn fold_val(
     let pol = circ_lagrange_interp(&rs, &g_rs, false).unwrap();
     let pol_vals: Vec<BaseField> = xs
         .iter()
-        .map(|x| eval_circ_poly_at(&pol, &x.to_point()))
+        .map(|x| pol.eval_circ_poly_at(&x.to_point()))
         .collect();
     let zpol = circ_zpoly(&rs, None, true, Some(oods_rep)); // TODO: use `split_exts` to convert zpol to M31
     let zpol = circ_poly_to_int_poly(&zpol).unwrap();
@@ -678,8 +678,8 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
                         x = x.conj();
                     }
 
-                    let d = (*v - eval_circ_poly_at(&pol, &x.to_point()))
-                        / eval_circ_poly_at(&zpol, &x.to_secure_field_point());
+                    let d: QM31 = (*v - pol.eval_circ_poly_at(&x.to_point()))
+                        / zpol.eval_circ_poly_at(&x.to_secure_field_point());
 
                     let m = d.0 .0 * ((x.to_point() + r_comb).x).geom_sum(rs.len());
                     v_s.push(m);
@@ -698,7 +698,7 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
             )
             .unwrap();
             let mult = r_fold + x0.conj().to_point();
-            let eval_circ_poly_at = eval_circ_poly_at(&lagrange_interp, &mult);
+            let eval_circ_poly_at = lagrange_interp.eval_circ_poly_at(&mult);
             g_hat.push(eval_circ_poly_at);
         }
 
@@ -773,8 +773,8 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
                 x = x.conj();
             }
 
-            let d = (*v - eval_circ_poly_at(&pol, &x.to_point()))
-                / eval_circ_poly_at(&zpol, &x.to_secure_field_point());
+            let d = (*v - pol.eval_circ_poly_at(&x.to_point()))
+                / zpol.eval_circ_poly_at(&x.to_secure_field_point());
 
             let m = d.0 .0 * ((x.to_point() + r_comb).x).geom_sum(rs.len());
             v_s.push(m);
@@ -790,7 +790,7 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
         )
         .unwrap();
         let mult = r_fold + x0.conj().to_point();
-        let lhs = eval_circ_poly_at(&lagrange_interp, &mult);
+        let lhs = lagrange_interp.eval_circ_poly_at(&mult);
 
         let mut offset = coset2.step_size * t_shifts[k] as usize
             + eval_offsets[eval_offsets.len() - 1] * folding_params[folding_params.len() - 1];

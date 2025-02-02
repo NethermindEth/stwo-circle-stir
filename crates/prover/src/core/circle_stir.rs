@@ -127,12 +127,12 @@ mod tests {
     use crate::core::circle::{CirclePoint, CirclePointIndex};
     use crate::core::circle_fft::{
         calculate_g_hat, calculate_rs, calculate_rs_and_g_rs, calculate_xs, calculate_xs2s,
-        circ_lagrange_interp, circ_zpoly, eval_circ_poly_at, evaluate, fold_val, get_betas,
-        interpolate, prove_low_degree, shift_g_hat, verify_low_degree_proof, Conj,
+        circ_lagrange_interp, circ_zpoly, evaluate, fold_val, get_betas, interpolate,
+        prove_low_degree, shift_g_hat, verify_low_degree_proof, Conj,
     };
     use crate::core::fields::m31::BaseField;
     use crate::core::fields::qm31::{SecureField, QM31};
-    use crate::core::fields::Field;
+    use crate::core::fields::{Field, FieldCircPolyOps};
     use crate::core::poly::circle::CirclePoly;
     use crate::core::vcs::blake2_merkle::Blake2sMerkleChannel;
 
@@ -480,8 +480,8 @@ mod tests {
                             x = x.conj();
                         }
 
-                        let d = (*v - eval_circ_poly_at(&pol, &x.to_point()))
-                            / eval_circ_poly_at(&zpol, &x.to_secure_field_point());
+                        let d: QM31 = (*v - pol.eval_circ_poly_at(&x.to_point()))
+                            / zpol.eval_circ_poly_at(&x.to_secure_field_point());
 
                         let m = d.0 .0 * ((x.to_point() + r_comb).x).geom_sum(rs.len());
                         v_s.push(m);
@@ -501,7 +501,7 @@ mod tests {
                 .unwrap();
                 let x0_conj_point = x0.conj().to_point();
                 let mult = r_fold + x0_conj_point;
-                let eval_circ_poly_at = eval_circ_poly_at(&lagrange_interp, &mult);
+                let eval_circ_poly_at = lagrange_interp.eval_circ_poly_at(&mult);
                 g_hat.push(eval_circ_poly_at);
             }
 
@@ -636,8 +636,8 @@ mod tests {
                 }
                 let x_point = x.to_point();
 
-                let d = (*v - eval_circ_poly_at(&pol, &x.to_point()))
-                    / eval_circ_poly_at(&zpol, &x.to_secure_field_point());
+                let d: QM31 = (*v - pol.eval_circ_poly_at(&x.to_point()))
+                    / zpol.eval_circ_poly_at(&x.to_secure_field_point());
 
                 let m = d.0 .0 * ((x.to_point() + r_comb).x).geom_sum(rs.len());
                 v_s.push(m);
@@ -653,7 +653,7 @@ mod tests {
             )
             .unwrap();
             let mult = r_fold + x0.conj().to_point();
-            let lhs = eval_circ_poly_at(&lagrange_interp, &mult);
+            let lhs = lagrange_interp.eval_circ_poly_at(&mult);
 
             let mut offset = coset2.step_size * t_shifts[k] as usize
                 + eval_offsets[eval_offsets.len() - 1] * folding_params[folding_params.len() - 1];
@@ -805,8 +805,8 @@ mod tests {
                             x = x.conj();
                         }
 
-                        let d = (*v - eval_circ_poly_at(&pol, &x.to_point()))
-                            / eval_circ_poly_at(&zpol, &x.to_secure_field_point());
+                        let d: QM31 = (*v - pol.eval_circ_poly_at(&x.to_point()))
+                            / zpol.eval_circ_poly_at(&x.to_secure_field_point());
 
                         let m = d.0 .0 * ((x.to_point() + r_comb).x).geom_sum(rs.len());
                         v_s.push(m);
@@ -825,7 +825,7 @@ mod tests {
                 )
                 .unwrap();
                 let mult = r_fold + x0.conj().to_point();
-                let eval_circ_poly_at = eval_circ_poly_at(&lagrange_interp, &mult);
+                let eval_circ_poly_at = lagrange_interp.eval_circ_poly_at(&mult);
                 g_hat.push(eval_circ_poly_at);
             }
 
@@ -903,8 +903,8 @@ mod tests {
                     x = x.conj();
                 }
 
-                let d = (*v - eval_circ_poly_at(&pol, &x.to_point()))
-                    / eval_circ_poly_at(&zpol, &x.to_secure_field_point());
+                let d: QM31 = (*v - pol.eval_circ_poly_at(&x.to_point()))
+                    / zpol.eval_circ_poly_at(&x.to_secure_field_point());
 
                 let m = d.0 .0 * ((x.to_point() + r_comb).x).geom_sum(rs.len());
                 v_s.push(m);
@@ -920,7 +920,7 @@ mod tests {
             )
             .unwrap();
             let mult = r_fold + x0.conj().to_point();
-            let lhs = eval_circ_poly_at(&lagrange_interp, &mult);
+            let lhs = lagrange_interp.eval_circ_poly_at(&mult);
 
             let mut offset = coset2.step_size * t_shifts[k] as usize
                 + eval_offsets[eval_offsets.len() - 1] * folding_params[folding_params.len() - 1];
