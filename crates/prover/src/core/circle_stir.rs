@@ -127,7 +127,7 @@ mod tests {
     use crate::core::circle::{CirclePoint, CirclePointIndex};
     use crate::core::circle_fft::{
         calculate_g_hat, calculate_rs, calculate_rs_and_g_rs, calculate_xs, calculate_xs2s,
-        circ_zpoly, evaluate, fold_val, get_betas, interpolate, prove_low_degree, shift_g_hat,
+        evaluate, fold_val, get_betas, interpolate, prove_low_degree, shift_g_hat,
         verify_low_degree_proof, Conj,
     };
     use crate::core::fields::m31::BaseField;
@@ -506,7 +506,7 @@ mod tests {
             r_fold = r_fold_new;
             r_comb = r_comb_new;
             rs = rs_new;
-            zpol = circ_zpoly(&rs, None, true, Some(ood_rep));
+            zpol = rs.circ_zpoly(None, true, Some(ood_rep));
             g_rs = betas
                 .into_iter()
                 .chain(g_hat.into_iter().map(|x| QM31::from_single_m31(x)))
@@ -824,7 +824,7 @@ mod tests {
             r_fold = r_fold_new;
             r_comb = r_comb_new;
             rs = rs_new;
-            zpol = circ_zpoly(&rs, None, true, Some(ood_rep));
+            zpol = rs.circ_zpoly(None, true, Some(ood_rep));
             g_rs = betas
                 .into_iter()
                 .chain(g_hat.into_iter().map(|x| QM31::from_single_m31(x)))
