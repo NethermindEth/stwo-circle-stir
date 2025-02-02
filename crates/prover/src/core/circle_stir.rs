@@ -127,12 +127,12 @@ mod tests {
     use crate::core::circle::{CirclePoint, CirclePointIndex};
     use crate::core::circle_fft::{
         calculate_g_hat, calculate_rs, calculate_rs_and_g_rs, calculate_xs, calculate_xs2s,
-        circ_lagrange_interp, circ_zpoly, evaluate, fold_val, get_betas, interpolate,
-        prove_low_degree, shift_g_hat, verify_low_degree_proof, Conj,
+        circ_zpoly, evaluate, fold_val, get_betas, interpolate, prove_low_degree, shift_g_hat,
+        verify_low_degree_proof, Conj,
     };
     use crate::core::fields::m31::BaseField;
     use crate::core::fields::qm31::{SecureField, QM31};
-    use crate::core::fields::{Field, FieldCircPolyOps};
+    use crate::core::fields::{CircPolyInterpolation, Field, FieldCircPolyOps};
     use crate::core::poly::circle::CirclePoly;
     use crate::core::vcs::blake2_merkle::Blake2sMerkleChannel;
 
@@ -490,15 +490,12 @@ mod tests {
                     v_s.append(&mut val.to_vec());
                 }
 
-                let lagrange_interp = circ_lagrange_interp(
-                    &xs2s[t_conj[k] as usize]
-                        .iter()
-                        .map(|x| x.to_point())
-                        .collect(),
-                    &v_s,
-                    true,
-                )
-                .unwrap();
+                let lagrange_interp = xs2s[t_conj[k] as usize]
+                    .iter()
+                    .map(|x| x.to_point())
+                    .collect::<Vec<_>>()
+                    .circ_lagrange_interp(&v_s, true)
+                    .unwrap();
                 let x0_conj_point = x0.conj().to_point();
                 let mult = r_fold + x0_conj_point;
                 let eval_circ_poly_at = lagrange_interp.eval_circ_poly_at(&mult);
@@ -514,7 +511,7 @@ mod tests {
                 .into_iter()
                 .chain(g_hat.into_iter().map(|x| QM31::from_single_m31(x)))
                 .collect();
-            pol = circ_lagrange_interp(&rs, &g_rs, false).unwrap();
+            pol = rs.circ_lagrange_interp(&g_rs, false).unwrap();
         }
 
         let denom: usize = folding_params.iter().product();
@@ -643,15 +640,12 @@ mod tests {
                 v_s.push(m);
             }
 
-            let lagrange_interp = circ_lagrange_interp(
-                &xs2s[t_conj[k] as usize]
-                    .iter()
-                    .map(|x| x.to_point())
-                    .collect(),
-                &v_s,
-                true,
-            )
-            .unwrap();
+            let lagrange_interp = xs2s[t_conj[k] as usize]
+                .iter()
+                .map(|x| x.to_point())
+                .collect::<Vec<_>>()
+                .circ_lagrange_interp(&v_s, true)
+                .unwrap();
             let mult = r_fold + x0.conj().to_point();
             let lhs = lagrange_interp.eval_circ_poly_at(&mult);
 
@@ -815,15 +809,12 @@ mod tests {
                     v_s.append(&mut val.to_vec());
                 }
 
-                let lagrange_interp = circ_lagrange_interp(
-                    &xs2s[t_conj[k] as usize]
-                        .iter()
-                        .map(|x| x.to_point())
-                        .collect(),
-                    &v_s,
-                    true,
-                )
-                .unwrap();
+                let lagrange_interp = xs2s[t_conj[k] as usize]
+                    .iter()
+                    .map(|x| x.to_point())
+                    .collect::<Vec<_>>()
+                    .circ_lagrange_interp(&v_s, true)
+                    .unwrap();
                 let mult = r_fold + x0.conj().to_point();
                 let eval_circ_poly_at = lagrange_interp.eval_circ_poly_at(&mult);
                 g_hat.push(eval_circ_poly_at);
@@ -838,7 +829,7 @@ mod tests {
                 .into_iter()
                 .chain(g_hat.into_iter().map(|x| QM31::from_single_m31(x)))
                 .collect();
-            pol = circ_lagrange_interp(&rs, &g_rs, false).unwrap();
+            pol = rs.circ_lagrange_interp(&g_rs, false).unwrap();
         }
 
         // next section
@@ -910,15 +901,12 @@ mod tests {
                 v_s.push(m);
             }
 
-            let lagrange_interp = circ_lagrange_interp(
-                &xs2s[t_conj[k] as usize]
-                    .iter()
-                    .map(|x| x.to_point())
-                    .collect(),
-                &v_s,
-                true,
-            )
-            .unwrap();
+            let lagrange_interp = xs2s[t_conj[k] as usize]
+                .iter()
+                .map(|x| x.to_point())
+                .collect::<Vec<_>>()
+                .circ_lagrange_interp(&v_s, true)
+                .unwrap();
             let mult = r_fold + x0.conj().to_point();
             let lhs = lagrange_interp.eval_circ_poly_at(&mult);
 

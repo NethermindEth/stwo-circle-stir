@@ -2,6 +2,7 @@ use std::fmt::{Debug, Display};
 use std::iter::{Product, Sum};
 use std::ops::{Mul, MulAssign, Neg};
 
+use m31::M31;
 use num_traits::{NumAssign, NumAssignOps, NumOps, One};
 
 use super::backend::ColumnOps;
@@ -38,6 +39,91 @@ pub trait FieldCircPolyOps {
     fn mul_circ_by_const(&self, constant: &Self::Field) -> Self;
 
     fn eval_circ_poly_at(&self, point: &CirclePoint<Self::Field>) -> Self::Field;
+    fn circ_poly_to_int_poly(&self) -> Result<[Vec<M31>; 2], String>;
+}
+
+pub trait CircPolyInterpolation {
+    type Field: Field + AllConjugate;
+
+    fn circ_zpoly(
+        &self,
+        nzero: Option<CirclePoint<Self::Field>>,
+        split_exts: bool,
+        oods_rep: Option<usize>,
+    ) -> [Vec<Self::Field>; 2];
+
+    fn circ_lagrange_interp(
+        &self,
+        vals: &Vec<Self::Field>,
+        normalize: bool,
+    ) -> Result<[Vec<M31>; 2], String>
+    where
+        CirclePoint<Self::Field>: AllConjugate;
+
+    // pub fn circ_lagrange_interp<F>(
+    //     pts: &Vec<CirclePoint<F>>,
+    //     vals: &Vec<F>,
+    //     normalize: bool,
+    // ) -> Result<[Vec<BaseField>; 2], String>
+    // where
+    //     F: Field + AllConjugate,
+    //     CirclePoint<F>: AllConjugate,
+    // {
+    //     if pts.len() != vals.len() {
+    //         return Err("Cannot interpolate".to_owned());
+    //     }
+
+    //     let mut n_pts = vec![];
+    //     let mut n_vals = vec![];
+
+    //     for i in 0..pts.len() {
+    //         let mut p_conj = pts[i].all_conj();
+    //         let mut v_conj = vals[i].all_conj();
+
+    //         if p_conj.len() != v_conj.len() {
+    //             return Err("Cannot interpolate".to_owned());
+    //         }
+
+    //         n_pts.append(&mut p_conj);
+    //         n_vals.append(&mut v_conj);
+    //     }
+    //     let pts = n_pts;
+    //     let vals = n_vals;
+
+    //     let mut ans = [vec![], vec![]];
+    //     for i in 0..pts.len() {
+    //         let pts_removed = pts[..i]
+    //             .iter()
+    //             .chain(pts[i + 1..].iter())
+    //             .cloned()
+    //             .collect();
+
+    //         let pol = circ_zpoly(&pts_removed, Some(pts[i]), false, None);
+    //         let scale = vals[i] / eval_circ_poly_at(&pol, &pts[i]);
+    //         ans = add_circ_polys(&ans, &mul_circ_by_const(&pol, &scale));
+    //     }
+
+    //     if normalize && pts.len() % 2 == 0 {
+    //         let d = pts.len() / 2;
+    //         let zpol = circ_zpoly(&pts, None, false, None);
+    //         let coef_a = if ans[1].len() >= d {
+    //             ans[1][d - 1]
+    //         } else {
+    //             F::zero()
+    //         };
+    //         let scale = coef_a / zpol[1][d - 1];
+    //         ans = sub_circ_polys(&ans, &mul_circ_by_const(&zpol, &scale));
+    //     }
+
+    //     for i in 0..pts.len() {
+    //         let eval = eval_circ_poly_at(&ans, &pts[i]);
+    //         if eval != vals[i] {
+    //             return Err("Cannot interoplate".to_owned());
+    //         }
+    //     }
+
+    //     circ_poly_to_int_poly(&ans)
+    // }
 }
 
 pub trait FieldExpOps: Mul<Output = Self> + MulAssign + Sized + One + Clone {
@@ -196,6 +282,12 @@ impl<F: Field> ExtensionOf<F> for F {
     const EXTENSION_DEGREE: usize = 1;
 }
 
+pub trait AllConjugate {
+    fn all_conj(&self) -> Vec<Self>
+    where
+        Self: Sized;
+}
+
 #[macro_export]
 macro_rules! impl_field {
     // $($field_name:ident : $field_type:ty)
@@ -205,7 +297,9 @@ macro_rules! impl_field {
         use itertools::max;
         use num_traits::{Num, One, Zero};
         use $crate::core::circle::CirclePoint;
-        use $crate::core::fields::{Field, FieldCircPolyOps, FieldPolyOps};
+        use $crate::core::fields::{
+            AllConjugate, CircPolyInterpolation, Field, FieldCircPolyOps, FieldPolyOps,
+        };
         impl Num for $field_name {
             type FromStrRadixErr = Box<dyn std::error::Error>;
 
@@ -332,6 +426,153 @@ macro_rules! impl_field {
             }
             fn eval_circ_poly_at(&self, point: &CirclePoint<Self::Field>) -> Self::Field {
                 self[0].eval_poly_at(&point.x) + self[1].eval_poly_at(&point.x) * point.y
+            }
+
+            fn circ_poly_to_int_poly(&self) -> Result<[Vec<BaseField>; 2], String> {
+                let mut p0 = vec![];
+                let mut p1 = vec![];
+
+                for f in &self[0] {
+                    let m = f.to_basefield();
+                    if m.is_err() {
+                        return Err(m.unwrap_err());
+                    }
+
+                    p0.push(m.unwrap());
+                }
+
+                for f in &self[1] {
+                    let m = f.to_basefield();
+                    if m.is_err() {
+                        return Err(m.unwrap_err());
+                    }
+
+                    p1.push(m.unwrap());
+                }
+
+                Ok([p0, p1])
+            }
+        }
+
+        impl CircPolyInterpolation for Vec<CirclePoint<$field_name>> {
+            type Field = $field_name;
+
+            fn circ_zpoly(
+                &self,
+                nzero: Option<CirclePoint<Self::Field>>,
+                split_exts: bool,
+                oods_rep: Option<usize>,
+            ) -> [Vec<Self::Field>; 2]
+            where
+                CirclePoint<Self::Field>: AllConjugate,
+            {
+                let mut pts = self.clone();
+                if split_exts {
+                    let mut pts2 = vec![];
+
+                    for (index, p) in pts.iter().enumerate() {
+                        let mut all_conjs = p.all_conj();
+                        if oods_rep.is_some() && index < oods_rep.unwrap() {
+                            // TODO: refactor the entire approach so that we dont need to use
+                            // this hack
+                            // this is for when we have a mix of QM31 and M31 values where
+                            // the M31s have been 'forced' converted to QM31s
+                            // QM31 will have 4 all_conjs values while M31 will only have 1
+
+                            if all_conjs.len() != 4 {
+                                all_conjs.resize(4, all_conjs[0]);
+                            }
+                        }
+
+                        pts2.append(&mut all_conjs);
+                    }
+
+                    pts = pts2;
+                }
+
+                let mut ans: [Vec<Self::Field>; 2] = [vec![Self::Field::one()], vec![]];
+                for i in 0..(pts.len() / 2) {
+                    ans = ans.mul_circ_polys(&pts[2 * i].line(pts[2 * i + 1]));
+                }
+                if pts.len() % 2 == 1 {
+                    if nzero.is_some() && nzero.unwrap().x == pts[pts.len() - 1].x {
+                        ans = ans.mul_circ_polys(&[
+                            vec![pts[pts.len() - 1].y],
+                            vec![-Self::Field::one()],
+                        ]);
+                    } else {
+                        ans = ans.mul_circ_polys(&[
+                            vec![pts[pts.len() - 1].x, -Self::Field::one()],
+                            vec![],
+                        ]);
+                    }
+                }
+
+                ans
+            }
+
+            fn circ_lagrange_interp(
+                &self,
+                vals: &Vec<Self::Field>,
+                normalize: bool,
+            ) -> Result<[Vec<M31>; 2], String>
+            where
+                CirclePoint<Self::Field>: AllConjugate,
+            {
+                if self.len() != vals.len() {
+                    return Err("Cannot interpolate".to_owned());
+                }
+
+                let mut n_pts = vec![];
+                let mut n_vals = vec![];
+
+                for i in 0..self.len() {
+                    let mut p_conj = self[i].all_conj();
+                    let mut v_conj = vals[i].all_conj();
+
+                    if p_conj.len() != v_conj.len() {
+                        return Err("Cannot interpolate".to_owned());
+                    }
+
+                    n_pts.append(&mut p_conj);
+                    n_vals.append(&mut v_conj);
+                }
+                let pts = n_pts;
+                let vals = n_vals;
+
+                let mut ans = [vec![], vec![]];
+                for i in 0..pts.len() {
+                    let pts_removed: Vec<CirclePoint<Self::Field>> = pts[..i]
+                        .iter()
+                        .chain(pts[i + 1..].iter())
+                        .cloned()
+                        .collect();
+
+                    let pol = pts_removed.circ_zpoly(Some(pts[i]), false, None);
+                    let scale = vals[i] / pol.eval_circ_poly_at(&pts[i]);
+                    ans = ans.add_circ_polys(&pol.mul_circ_by_const(&scale));
+                }
+
+                if normalize && pts.len() % 2 == 0 {
+                    let d = pts.len() / 2;
+                    let zpol = pts.circ_zpoly(None, false, None);
+                    let coef_a = if ans[1].len() >= d {
+                        ans[1][d - 1]
+                    } else {
+                        Self::Field::zero()
+                    };
+                    let scale = coef_a / zpol[1][d - 1];
+                    ans = ans.sub_circ_polys(&zpol.mul_circ_by_const(&scale));
+                }
+
+                for i in 0..pts.len() {
+                    let eval = ans.eval_circ_poly_at(&pts[i]);
+                    if eval != vals[i] {
+                        return Err("Cannot interoplate".to_owned());
+                    }
+                }
+
+                ans.circ_poly_to_int_poly()
             }
         }
 
