@@ -817,18 +817,6 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
     Ok(())
 }
 
-pub fn geom_sum<F: Field>(x: F, p: usize) -> F {
-    let mut ans = F::one();
-    let mut prod = F::one();
-
-    for _ in 0..p {
-        prod = prod * x;
-        ans = ans + prod;
-    }
-
-    ans
-}
-
 pub fn circ_zpoly<F>(
     pts: &Vec<CirclePoint<F>>,
     nzero: Option<CirclePoint<F>>,
