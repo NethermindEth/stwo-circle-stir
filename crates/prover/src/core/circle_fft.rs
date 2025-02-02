@@ -775,25 +775,6 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
     Ok(())
 }
 
-pub fn eval_circ_poly_at<F: Field>(polys: &[Vec<F>; 2], point: &CirclePoint<F>) -> F {
-    eval_poly_at(&polys[0], &point.x) + eval_poly_at(&polys[1], &point.x) * point.y
-}
-
-// Evaluate a polynomial at a point
-pub fn eval_poly_at<F: Field>(poly: &Vec<F>, pt: &F) -> F {
-    let mut y = F::zero();
-    let mut power_of_x = F::one();
-
-    let pt2 = pt.clone();
-
-    for coeff in poly.iter() {
-        y += power_of_x * *coeff;
-        power_of_x = power_of_x * *pt;
-    }
-
-    y
-}
-
 pub trait Conj {
     fn conj(&self) -> Self;
 }
@@ -823,9 +804,7 @@ mod tests {
     use crate::core::backend::CpuBackend;
     use crate::core::channel::MerkleChannel;
     use crate::core::circle::{CirclePoint, CirclePointIndex};
-    use crate::core::circle_fft::{
-        eval_circ_poly_at, eval_poly_at, evaluate, get_betas, interpolate, shift_g_hat, Conj,
-    };
+    use crate::core::circle_fft::{evaluate, get_betas, interpolate, shift_g_hat, Conj};
     use crate::core::fields::m31::{BaseField, M31};
     use crate::core::fields::qm31::{SecureField, QM31};
     use crate::core::fields::{
@@ -1372,28 +1351,12 @@ mod tests {
     fn test_eval_poly_at() {
         let poly = vec![M31(1), M31(2), M31(3)];
         let pt = M31(2);
-        let res = eval_poly_at(&poly, &pt);
-        assert_eq!(res, M31(17));
-    }
-
-    #[test]
-    fn test_eval_poly_at2() {
-        let poly = vec![M31(1), M31(2), M31(3)];
-        let pt = M31(2);
         let res = poly.eval_poly_at(&pt);
         assert_eq!(res, M31(17));
     }
 
     #[test]
     fn test_eval_circ_poly_at() {
-        let poly = [vec![M31(1), M31(2), M31(3)], vec![M31(4), M31(5), M31(6)]];
-        let pt = CirclePointIndex(1).to_point();
-        let res = eval_circ_poly_at(&poly, &pt);
-        assert_eq!(res, M31(939809057));
-    }
-
-    #[test]
-    fn test_eval_circ_poly_at2() {
         let poly = [vec![M31(1), M31(2), M31(3)], vec![M31(4), M31(5), M31(6)]];
         let pt = CirclePointIndex(1).to_point();
         let res = poly.eval_circ_poly_at(&pt);
