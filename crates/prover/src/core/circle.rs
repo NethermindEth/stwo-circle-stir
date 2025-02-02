@@ -16,6 +16,20 @@ pub struct CirclePoint<F> {
     pub y: F,
 }
 
+impl<F: Field> CirclePoint<F> {
+    pub fn line(&self, pt2: CirclePoint<F>) -> [Vec<F>; 2] {
+        let dx = self.x - pt2.x;
+        if dx.is_zero() {
+            return [vec![self.x, -F::one()], vec![]]; // -F::one() equivalent to the baseField's P-1
+                                                      // F
+                                                      // can be any extension of the basefield
+        }
+
+        let slope = (self.y - pt2.y) / dx;
+        [vec![self.y - slope * self.x, slope], vec![-F::one()]]
+    }
+}
+
 impl<F: Zero + Add<Output = F> + FieldExpOps + Sub<Output = F> + Neg<Output = F>> CirclePoint<F> {
     pub fn zero() -> Self {
         Self {
@@ -161,7 +175,6 @@ impl<F: Field> ComplexConjugate for CirclePoint<F> {
     }
 }
 
-
 impl CirclePoint<SecureField> {
     pub fn get_point(index: u128) -> Self {
         assert!(index < SECURE_FIELD_CIRCLE_ORDER);
@@ -265,7 +278,7 @@ impl CirclePointIndex {
 
         CirclePoint::<SecureField> {
             x: SecureField::from_m31(point.x, M31::zero(), M31::zero(), M31::zero()),
-            y: SecureField::from_m31(point.y, M31::zero(), M31::zero(), M31::zero())
+            y: SecureField::from_m31(point.y, M31::zero(), M31::zero(), M31::zero()),
         }
     }
 }

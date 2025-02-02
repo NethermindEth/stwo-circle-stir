@@ -853,7 +853,7 @@ where
 
     let mut ans: [Vec<F>; 2] = [vec![F::one()], vec![]];
     for i in 0..(pts.len() / 2) {
-        ans = mul_circ_polys(&ans, &line(pts[2 * i], pts[2 * i + 1]));
+        ans = mul_circ_polys(&ans, &pts[2 * i].line(pts[2 * i + 1]));
     }
     if pts.len() % 2 == 1 {
         // if nzero.is_some() &&
@@ -886,19 +886,6 @@ pub fn eval_poly_at<F: Field>(poly: &Vec<F>, pt: &F) -> F {
     }
 
     y
-}
-
-// question: how does this self.modulus - 1 get translated to a QM value? because QM is comprises of
-// 4 M31 values
-fn line<F: Field>(pt1: CirclePoint<F>, pt2: CirclePoint<F>) -> [Vec<F>; 2] {
-    let dx = pt1.x - pt2.x;
-    if dx.is_zero() {
-        return [vec![pt1.x, -F::one()], vec![]]; // -F::one() equivalent to the baseField's P-1 F
-                                                 // can be any extension of the basefield
-    }
-
-    let slope = (pt1.y - pt2.y) / dx;
-    [vec![pt1.y - slope * pt1.x, slope], vec![-F::one()]]
 }
 
 fn mul_circ_polys<F: Field>(a: &[Vec<F>; 2], b: &[Vec<F>; 2]) -> [Vec<F>; 2] {
@@ -1196,7 +1183,7 @@ mod tests {
 
     use super::{
         calculate_g_hat, calculate_rs_and_g_rs, calculate_xs, calculate_xs2s, circ_lagrange_interp,
-        fold_val, line, AllConjugate,
+        fold_val, AllConjugate,
     };
     use crate::core::backend::CpuBackend;
     use crate::core::channel::MerkleChannel;
@@ -1593,7 +1580,7 @@ mod tests {
         let pt1 = CirclePointIndex(1).to_point();
         let pt2 = CirclePointIndex(2).to_point();
 
-        let line_res = line(pt1, pt2);
+        let line_res = pt1.line(pt2);
         assert_eq!(
             line_res,
             [
