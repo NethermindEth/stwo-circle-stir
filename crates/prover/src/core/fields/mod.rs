@@ -16,6 +16,24 @@ pub trait FieldOps<F: Field>: ColumnOps<F> {
     fn batch_inverse(column: &Self::Column, dst: &mut Self::Column);
 }
 
+pub trait FieldPolyOps {
+    type Field: Field;
+
+    fn mul_polys(&self, other: &Self) -> Self;
+    fn add_polys(&self, other: &Self) -> Self;
+    fn sub_polys(&self, other: &Self) -> Self;
+    fn mul_poly_by_const(&self, constant: &Self::Field) -> Self;
+}
+
+pub trait FieldCircPolyOps {
+    type Field: Field;
+
+    fn mul_circ_polys(&self, other: &Self) -> Self;
+    fn add_circ_polys(&self, other: &Self) -> Self;
+    fn sub_circ_polys(&self, other: &Self) -> Self;
+    fn mul_circ_by_const(&self, constant: &Self::Field) -> Self;
+}
+
 pub trait FieldExpOps: Mul<Output = Self> + MulAssign + Sized + One + Clone {
     fn square(&self) -> Self {
         self.clone() * self.clone()
@@ -166,8 +184,9 @@ macro_rules! impl_field {
     ($field_name: ty, $field_size: ident) => {
         use std::iter::{Product, Sum};
 
+        use itertools::max;
         use num_traits::{Num, One, Zero};
-        use $crate::core::fields::Field;
+        use $crate::core::fields::{Field, FieldCircPolyOps, FieldPolyOps};
 
         impl Num for $field_name {
             type FromStrRadixErr = Box<dyn std::error::Error>;
@@ -181,6 +200,107 @@ macro_rules! impl_field {
         }
 
         impl Field for $field_name {}
+
+        impl FieldPolyOps for Vec<$field_name> {
+            type Field = $field_name;
+
+            fn mul_polys(&self, other: &Self) -> Self {
+                if self.len() + other.len() == 0 {
+                    return vec![];
+                }
+
+                let mut o = vec![Self::Field::zero(); self.len() + other.len() - 1];
+                for i in 0..self.len() {
+                    for j in 0..other.len() {
+                        o[i + j] += self[i] * other[j];
+                    }
+                }
+
+                o
+            }
+
+            fn add_polys(&self, other: &Self) -> Self {
+                let max_iter = max([self.len(), other.len()]).unwrap();
+                let mut res = vec![];
+
+                for i in 0..max_iter {
+                    let a_i = if i < self.len() {
+                        self[i]
+                    } else {
+                        Self::Field::zero()
+                    };
+                    let b_i = if i < other.len() {
+                        other[i]
+                    } else {
+                        Self::Field::zero()
+                    };
+                    res.push(a_i + b_i);
+                }
+
+                res
+            }
+
+            fn sub_polys(&self, other: &Self) -> Self {
+                let max_iter = max([self.len(), other.len()]).unwrap();
+                let mut res = vec![];
+
+                for i in 0..max_iter {
+                    let a_i = if i < self.len() {
+                        self[i]
+                    } else {
+                        Self::Field::zero()
+                    };
+                    let b_i = if i < other.len() {
+                        other[i]
+                    } else {
+                        Self::Field::zero()
+                    };
+                    res.push(a_i - b_i);
+                }
+
+                res
+            }
+
+            fn mul_poly_by_const(&self, constant: &Self::Field) -> Self {
+                self.iter().map(|coeff| *coeff * *constant).collect()
+            }
+        }
+
+        impl FieldCircPolyOps for [Vec<$field_name>; 2] {
+            type Field = $field_name;
+
+            fn mul_circ_polys(&self, other: &Self) -> Self {
+                let a1b1 = self[1].mul_polys(&other[1]);
+
+                let x = self[0].mul_polys(&other[0]).add_polys(&a1b1).sub_polys(
+                    &vec![Self::Field::zero(), Self::Field::zero()]
+                        .into_iter()
+                        .chain(a1b1.into_iter())
+                        .collect(),
+                );
+
+                let y = self[0]
+                    .mul_polys(&other[1])
+                    .add_polys(&self[1].mul_polys(&other[0]));
+
+                [x, y]
+            }
+
+            fn add_circ_polys(&self, other: &Self) -> Self {
+                [self[0].add_polys(&other[0]), self[1].add_polys(&other[1])]
+            }
+
+            fn sub_circ_polys(&self, other: &Self) -> Self {
+                [self[0].sub_polys(&other[0]), self[1].sub_polys(&other[1])]
+            }
+
+            fn mul_circ_by_const(&self, constant: &Self::Field) -> Self {
+                [
+                    self[0].mul_poly_by_const(&constant),
+                    self[1].mul_poly_by_const(&constant),
+                ]
+            }
+        }
 
         impl AddAssign for $field_name {
             fn add_assign(&mut self, rhs: Self) {

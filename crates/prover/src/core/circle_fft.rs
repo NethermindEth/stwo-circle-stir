@@ -1300,6 +1300,7 @@ mod tests {
     };
     use crate::core::fields::m31::{BaseField, M31};
     use crate::core::fields::qm31::{SecureField, QM31};
+    use crate::core::fields::{FieldCircPolyOps, FieldPolyOps};
     use crate::core::pcs::PcsConfig;
     use crate::core::poly::circle::{CanonicCoset, CirclePoly};
     use crate::core::vcs::blake2_merkle::Blake2sMerkleChannel;
@@ -1704,11 +1705,29 @@ mod tests {
     }
 
     #[test]
+    fn test_mul_polys2() {
+        let a = vec![M31(5), M31(6)];
+        let b = vec![M31(7), M31(8)];
+
+        let res = a.mul_polys(&b);
+        assert_eq!(res, vec![M31(35), M31(82), M31(48)]);
+    }
+
+    #[test]
     fn test_add_polys() {
         let a = vec![M31(5), M31(6)];
         let b = vec![M31(7), M31(8)];
 
         let res = add_polys(&a, &b);
+        assert_eq!(res, vec![M31(12), M31(14)]);
+    }
+
+    #[test]
+    fn test_add_polys2() {
+        let a = vec![M31(5), M31(6)];
+        let b = vec![M31(7), M31(8)];
+
+        let res = a.add_polys(&b);
         assert_eq!(res, vec![M31(12), M31(14)]);
     }
 
@@ -1722,11 +1741,35 @@ mod tests {
     }
 
     #[test]
+    fn test_sub_polys2() {
+        let a = vec![M31(5), M31(6)];
+        let b = vec![M31(7), M31(8)];
+
+        let res = a.sub_polys(&b);
+        assert_eq!(res, vec![M31(2147483645), M31(2147483645)]);
+    }
+
+    #[test]
     fn test_mul_circ_polys() {
         let a = [vec![M31(5), M31(6)], vec![M31(7), M31(8)]];
         let b = [vec![M31(7), M31(8)], vec![M31(9), M31(10)]];
 
         let res = mul_circ_polys(&a, &b);
+        assert_eq!(
+            res,
+            [
+                vec![M31(98), M31(224), M31(65), M31(2147483505), M31(2147483567)],
+                vec![M31(94), M31(216), M31(124)]
+            ]
+        );
+    }
+
+    #[test]
+    fn test_mul_circ_polys2() {
+        let a = [vec![M31(5), M31(6)], vec![M31(7), M31(8)]];
+        let b = [vec![M31(7), M31(8)], vec![M31(9), M31(10)]];
+
+        let res = a.mul_circ_polys(&b);
         assert_eq!(
             res,
             [
@@ -1748,6 +1791,17 @@ mod tests {
     }
 
     #[test]
+    fn test_add_circ_polys2() {
+        let a = [vec![M31(5), M31(6)], vec![M31(7), M31(8)]];
+        let b = [vec![M31(7), M31(8)], vec![M31(9), M31(10)]];
+
+        let res = a.add_circ_polys(&b);
+
+        // [[12, 14], [16, 18]]
+        assert_eq!(res, [vec![M31(12), M31(14)], vec![M31(16), M31(18)]]);
+    }
+
+    #[test]
     fn test_sub_circ_polys() {
         let a = [vec![M31(5), M31(6)], vec![M31(7), M31(8)]];
         let b = [vec![M31(7), M31(8)], vec![M31(9), M31(10)]];
@@ -1763,7 +1817,31 @@ mod tests {
     }
 
     #[test]
+    fn test_sub_circ_polys2() {
+        let a = [vec![M31(5), M31(6)], vec![M31(7), M31(8)]];
+        let b = [vec![M31(7), M31(8)], vec![M31(9), M31(10)]];
+
+        let res = a.sub_circ_polys(&b);
+        assert_eq!(
+            res,
+            [
+                vec![M31(2147483645), M31(2147483645)],
+                vec![M31(2147483645), M31(2147483645)]
+            ]
+        );
+    }
+
+    #[test]
     fn test_mul_circ_by_const() {
+        let a = [vec![M31(5), M31(6)], vec![M31(7), M31(8)]];
+        let b = M31(7);
+
+        let res = mul_circ_by_const(&a, &b);
+        assert_eq!(res, [vec![M31(35), M31(42)], vec![M31(49), M31(56)]]);
+    }
+
+    #[test]
+    fn test_mul_circ_by_const2() {
         let a = [vec![M31(5), M31(6)], vec![M31(7), M31(8)]];
         let b = M31(7);
 
