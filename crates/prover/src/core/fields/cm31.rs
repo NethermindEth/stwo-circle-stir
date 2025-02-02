@@ -3,8 +3,10 @@ use std::ops::{
     Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Rem, RemAssign, Sub, SubAssign,
 };
 
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
+use super::m31::BaseField;
 use super::{ComplexConjugate, FieldExpOps};
 use crate::core::fields::m31::M31;
 use crate::{impl_extension_field, impl_field};
@@ -26,6 +28,15 @@ impl CM31 {
 
     pub fn from_m31(a: M31, b: M31) -> CM31 {
         Self(a, b)
+    }
+
+    pub fn to_basefield(&self) -> Result<BaseField, String> {
+        let m31_array = [self.0, self.1];
+        if m31_array[1] != BaseField::zero() {
+            return Err("m31_array[1] != 0".to_owned());
+        }
+
+        Ok(m31_array[0])
     }
 }
 
@@ -69,6 +80,28 @@ impl FieldExpOps for CM31 {
         assert!(!self.is_zero(), "0 has no inverse");
         // 1 / (a + bi) = (a - bi) / (a^2 + b^2).
         Self(self.0, -self.1) * (self.0.square() + self.1.square()).inverse()
+    }
+}
+
+impl AllConjugate for CM31 {
+    fn all_conj(&self) -> Vec<Self> {
+        vec![*self, self.complex_conjugate()]
+            .into_iter()
+            .unique()
+            .collect()
+    }
+}
+
+impl AllConjugate for CirclePoint<CM31> {
+    fn all_conj(&self) -> Vec<Self> {
+        let x = &self.x.all_conj();
+        let y = &self.y.all_conj();
+
+        x.iter()
+            .zip(y.iter())
+            .map(|(x, y)| CirclePoint { x: *x, y: *y })
+            .unique()
+            .collect()
     }
 }
 

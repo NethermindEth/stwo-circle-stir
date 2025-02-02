@@ -3,8 +3,10 @@ use std::ops::{
     Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Rem, RemAssign, Sub, SubAssign,
 };
 
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
+use super::m31::{BaseField, P};
 use super::secure_column::SECURE_EXTENSION_DEGREE;
 use super::{ComplexConjugate, FieldExpOps};
 use crate::core::fields::cm31::CM31;
@@ -62,6 +64,18 @@ impl QM31 {
     // QM31*CM31.
     pub fn mul_cm31(self, rhs: CM31) -> Self {
         Self(self.0 * rhs, self.1 * rhs)
+    }
+
+    pub fn to_basefield(&self) -> Result<BaseField, String> {
+        let m31_array = self.to_m31_array();
+        if m31_array[1] != BaseField::zero()
+            || m31_array[2] != BaseField::zero()
+            || m31_array[3] != BaseField::zero()
+        {
+            return Err("m31_array[1,2,3] != 0".to_owned());
+        }
+
+        Ok(m31_array[0])
     }
 }
 
@@ -127,6 +141,30 @@ impl FieldExpOps for QM31 {
         let denom = self.0.square() - (b2 + b2 + ib2);
         let denom_inverse = denom.inverse();
         Self(self.0 * denom_inverse, -self.1 * denom_inverse)
+    }
+}
+
+impl AllConjugate for QM31 {
+    fn all_conj(&self) -> Vec<Self> {
+        let mut conj = vec![*self, self.complex_conjugate()];
+        let mut conj_2: Vec<QM31> = conj.iter().map(|c| c.pow(P.into())).collect();
+
+        conj.append(&mut conj_2);
+
+        conj.into_iter().unique().collect()
+    }
+}
+
+impl AllConjugate for CirclePoint<QM31> {
+    fn all_conj(&self) -> Vec<Self> {
+        let x = &self.x.all_conj();
+        let y = &self.y.all_conj();
+
+        x.iter()
+            .zip(y.iter())
+            .map(|(x, y)| CirclePoint { x: *x, y: *y })
+            //.unique()
+            .collect()
     }
 }
 

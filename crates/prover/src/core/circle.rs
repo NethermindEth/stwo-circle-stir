@@ -2,7 +2,7 @@ use std::ops::{Add, Div, Mul, Neg, Sub};
 
 use num_traits::{One, Zero};
 
-use super::fields::m31::{BaseField, M31};
+use super::fields::m31::{BaseField, M31, P};
 use super::fields::qm31::SecureField;
 use super::fields::{ComplexConjugate, Field, FieldExpOps};
 use crate::core::channel::Channel;
@@ -14,6 +14,20 @@ use crate::math::utils::egcd;
 pub struct CirclePoint<F> {
     pub x: F,
     pub y: F,
+}
+
+impl<F: Field> CirclePoint<F> {
+    pub fn line(&self, pt2: CirclePoint<F>) -> [Vec<F>; 2] {
+        let dx = self.x - pt2.x;
+        if dx.is_zero() {
+            return [vec![self.x, -F::one()], vec![]]; // -F::one() equivalent to the baseField's P-1
+                                                      // F
+                                                      // can be any extension of the basefield
+        }
+
+        let slope = (self.y - pt2.y) / dx;
+        [vec![self.y - slope * self.x, slope], vec![-F::one()]]
+    }
 }
 
 impl<F: Zero + Add<Output = F> + FieldExpOps + Sub<Output = F> + Neg<Output = F>> CirclePoint<F> {
@@ -161,6 +175,14 @@ impl<F: Field> ComplexConjugate for CirclePoint<F> {
     }
 }
 
+impl CirclePoint<BaseField> {
+    pub fn mul_circle_point(self, rhs: CirclePoint<BaseField>) -> Self {
+        Self {
+            x: self.x * rhs.x - self.y * rhs.y,
+            y: self.x * rhs.y + self.y * rhs.x,
+        }
+    }
+}
 
 impl CirclePoint<SecureField> {
     pub fn get_point(index: u128) -> Self {
@@ -265,8 +287,14 @@ impl CirclePointIndex {
 
         CirclePoint::<SecureField> {
             x: SecureField::from_m31(point.x, M31::zero(), M31::zero(), M31::zero()),
-            y: SecureField::from_m31(point.y, M31::zero(), M31::zero(), M31::zero())
+            y: SecureField::from_m31(point.y, M31::zero(), M31::zero(), M31::zero()),
         }
+    }
+
+    pub fn conj(&self) -> Self {
+        let conj_index: u32 = (P + 1) - (self.0) as u32;
+        // Self((P - self.0).try_into().unwrap())
+        Self(conj_index as usize)
     }
 }
 

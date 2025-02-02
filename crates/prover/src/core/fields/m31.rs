@@ -62,6 +62,10 @@ impl M31 {
     pub const fn from_u32_unchecked(arg: u32) -> Self {
         Self(arg)
     }
+
+    pub fn to_basefield(&self) -> Result<Self, String> {
+        Ok(*self)
+    }
 }
 
 impl Display for M31 {
@@ -161,6 +165,18 @@ impl Distribution<M31> for Standard {
     // Not intended for cryptographic use. Should only be used in tests and benchmarks.
     fn sample<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> M31 {
         M31(rng.gen_range(0..P))
+    }
+}
+
+impl AllConjugate for M31 {
+    fn all_conj(&self) -> Vec<Self> {
+        vec![*self]
+    }
+}
+
+impl AllConjugate for CirclePoint<M31> {
+    fn all_conj(&self) -> Vec<Self> {
+        return vec![*self];
     }
 }
 
