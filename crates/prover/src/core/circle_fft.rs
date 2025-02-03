@@ -18,14 +18,6 @@ use super::poly::NaturalOrder;
 use super::simple_merkle::{verify_many_proof, MerkleProof, SimpleMerkleTree};
 use super::vcs::ops::MerkleHasher;
 
-pub fn calculate_xs(coset: &Coset, eval_offset: CirclePointIndex) -> Vec<CirclePointIndex> {
-    let mut xs = coset.get_mul_cycle(eval_offset);
-    let mut xs_conj: Vec<CirclePointIndex> = xs.iter().map(|x| x.conj()).collect();
-    xs.append(&mut xs_conj);
-
-    xs
-}
-
 pub fn interpolate<B: BackendForChannel<MC>, MC: MerkleChannel>(
     coset: &Coset,
     to_shift: CirclePointIndex,
@@ -389,7 +381,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
 
         MC::mix_root(channel, m2.root());
 
-        xs = calculate_xs(&coset, eval_offsets[i]);
+        xs = coset.calculate_xs(eval_offsets[i]);
 
         let r_outs: Vec<CirclePoint<SecureField>> = channel
             .draw_felts(ood_rep)
@@ -768,7 +760,7 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{calculate_g_hat, calculate_rs_and_g_rs, calculate_xs, fold_val};
+    use super::{calculate_g_hat, calculate_rs_and_g_rs, fold_val};
     use crate::core::backend::CpuBackend;
     use crate::core::channel::MerkleChannel;
     use crate::core::circle::{CirclePoint, CirclePointIndex};
@@ -877,7 +869,7 @@ mod tests {
         let coset = CanonicCoset::new(log_size).coset;
         let offset = CirclePointIndex(1);
         let offset_point = offset.to_point();
-        let xs = calculate_xs(&coset, offset);
+        let xs = coset.calculate_xs(offset);
         let xs_points: Vec<CirclePoint<M31>> = xs.iter().map(|x| x.to_point()).collect();
 
         assert_eq!(
@@ -963,7 +955,7 @@ mod tests {
 
         let vals: Vec<M31> = (0..2 * eval_size).map(|x| BaseField::from(x)).collect();
 
-        let xs = calculate_xs(&coset, CirclePointIndex(0));
+        let xs = coset.calculate_xs(CirclePointIndex(0));
         let xs2s = coset2.calculate_xs2s(folding_param);
 
         let g_hat = calculate_g_hat(
@@ -1521,7 +1513,7 @@ mod tests {
         let ori_eval_offset_point = ori_eval_offset.to_point();
         let eval_offset = coset.step_size + ori_eval_offset;
         let eval_offset_point = eval_offset.to_point();
-        let xs = calculate_xs(&coset, ori_eval_offset);
+        let xs = coset.calculate_xs(ori_eval_offset);
         let xs_points: Vec<CirclePoint<M31>> = xs.iter().map(|x| x.to_point()).collect();
 
         let folding_param = 4;

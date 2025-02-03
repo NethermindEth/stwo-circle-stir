@@ -126,7 +126,7 @@ mod tests {
     use crate::core::channel::Blake2sChannel;
     use crate::core::circle::{CirclePoint, CirclePointIndex};
     use crate::core::circle_fft::{
-        calculate_g_hat, calculate_rs, calculate_rs_and_g_rs, calculate_xs, evaluate, fold_val,
+        calculate_g_hat, calculate_rs, calculate_rs_and_g_rs, evaluate, fold_val,
         get_betas, interpolate, prove_low_degree, shift_g_hat, verify_low_degree_proof,
     };
     use crate::core::fields::m31::BaseField;
@@ -203,7 +203,7 @@ mod tests {
         let mut coset = params.coset.clone();
         let ood_rep = 1;
 
-        let mut xs = calculate_xs(&coset, eval_offsets[0]);
+        let mut xs = coset.calculate_xs(eval_offsets[0]);
         let xs_points = xs.iter().map(|x| x.to_point()).collect::<Vec<_>>();
 
         if values.len() != xs.len() && xs.len() / 2 != eval_sizes[0] {
@@ -272,7 +272,7 @@ mod tests {
                 eval_offsets[i],
             );
 
-            xs = calculate_xs(&coset, eval_offsets[i]);
+            xs = coset.calculate_xs(eval_offsets[i]);
             let xs_points = xs.iter().map(|x| x.to_point()).collect::<Vec<_>>();
 
             // [(((2074834727, 1132982331), (1432421146, 1584772322)), ((913587039, 1052462600),
