@@ -126,9 +126,8 @@ mod tests {
     use crate::core::channel::Blake2sChannel;
     use crate::core::circle::{CirclePoint, CirclePointIndex};
     use crate::core::circle_fft::{
-        calculate_g_hat, calculate_rs, calculate_rs_and_g_rs, calculate_xs, calculate_xs2s,
-        evaluate, fold_val, get_betas, interpolate, prove_low_degree, shift_g_hat,
-        verify_low_degree_proof,
+        calculate_g_hat, calculate_rs, calculate_rs_and_g_rs, calculate_xs, evaluate, fold_val,
+        get_betas, interpolate, prove_low_degree, shift_g_hat, verify_low_degree_proof,
     };
     use crate::core::fields::m31::BaseField;
     use crate::core::fields::qm31::{SecureField, QM31};
@@ -230,7 +229,7 @@ mod tests {
             folded_len = eval_sizes[i - 1] / folding_params[i - 1];
             let mut coset2 = coset.repeated_double(folded_len.ilog2());
 
-            let xs2s = calculate_xs2s(coset2, folding_params[i - 1]);
+            let xs2s = coset2.calculate_xs2s(folding_params[i - 1]);
 
             if i == 2 {
                 // (1300800228, 574193615)
@@ -435,7 +434,7 @@ mod tests {
             let rs_new = calculate_rs(&r_outs, &t_shifts, &t_conj, &coset2, p_offset);
 
             let temp_coset2 = coset.repeated_double(folded_len.ilog2());
-            let xs2s = calculate_xs2s(temp_coset2, folding_params[i - 1]);
+            let xs2s = temp_coset2.calculate_xs2s(folding_params[i - 1]);
             let xs2s_points_0 = xs2s[0].iter().map(|x| x.to_point()).collect::<Vec<_>>();
             let xs2s_points_1 = xs2s[1].iter().map(|x| x.to_point()).collect::<Vec<_>>();
 
@@ -589,7 +588,7 @@ mod tests {
         let t_conj = vec![1, 0, 0, 1];
 
         let coset3 = coset.repeated_double(folded_len.ilog2());
-        let xs2s = calculate_xs2s(coset3, folding_params[folding_params.len() - 1]);
+        let xs2s = coset3.calculate_xs2s(folding_params[folding_params.len() - 1]);
 
         let mut vals = vec![
             BaseField::from(486321191),
@@ -760,7 +759,7 @@ mod tests {
             let rs_new = calculate_rs(&r_outs, &t_shifts, &t_conj, &coset2, p_offset);
 
             let temp_coset2 = coset.repeated_double(folded_len.ilog2());
-            let xs2s = calculate_xs2s(temp_coset2, folding_params[i - 1]);
+            let xs2s = temp_coset2.calculate_xs2s(folding_params[i - 1]);
 
             let mut vals = vec![
                 BaseField::from(315540234),
@@ -855,7 +854,7 @@ mod tests {
         let t_conj = vec![1, 0, 0, 1];
 
         let coset3 = coset.repeated_double(folded_len.ilog2());
-        let xs2s = calculate_xs2s(coset3, folding_params[folding_params.len() - 1]);
+        let xs2s = coset3.calculate_xs2s(folding_params[folding_params.len() - 1]);
 
         let mut vals = vec![
             BaseField::from(486321191),

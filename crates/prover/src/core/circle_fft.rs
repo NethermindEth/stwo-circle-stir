@@ -18,23 +18,40 @@ use super::poly::NaturalOrder;
 use super::simple_merkle::{verify_many_proof, MerkleProof, SimpleMerkleTree};
 use super::vcs::ops::MerkleHasher;
 
-pub fn calculate_xs2s(coset: Coset, folding_param: usize) -> [Vec<CirclePointIndex>; 2] {
-    let mut xs2s: [Vec<CirclePointIndex>; 2] = [vec![], vec![]];
-    xs2s[0] = coset.get_mul_cycle(CirclePointIndex(0));
-    xs2s[1].push(xs2s[0][0]);
-    for j in 1..folding_param {
-        xs2s[1].push(xs2s[0][xs2s[0].len() - j]);
-    }
-
-    xs2s
-}
-
 pub fn calculate_xs(coset: &Coset, eval_offset: CirclePointIndex) -> Vec<CirclePointIndex> {
     let mut xs = coset.get_mul_cycle(eval_offset);
     let mut xs_conj: Vec<CirclePointIndex> = xs.iter().map(|x| x.conj()).collect();
     xs.append(&mut xs_conj);
 
     xs
+}
+
+pub fn interpolate<B: BackendForChannel<MC>, MC: MerkleChannel>(
+    coset: &Coset,
+    to_shift: CirclePointIndex,
+    eval: &Vec<BaseField>,
+) -> CirclePoly<B> {
+    let shift_size = coset.shift(-to_shift).conjugate().initial_index;
+    let domain = CircleDomain::new(coset.shift(shift_size));
+    let evaluation = CircleEvaluation::<B, BaseField, NaturalOrder>::new(
+        domain,
+        eval.iter().map(|x| *x).collect(),
+    );
+    let poly = evaluation.clone().bit_reverse().interpolate();
+
+    poly
+}
+
+pub fn evaluate<B: BackendForChannel<MC>, MC: MerkleChannel>(
+    poly: CirclePoly<B>,
+    coset: &Coset,
+    offset: CirclePointIndex,
+) -> CircleEvaluation<B, M31, NaturalOrder> {
+    let to_shift = coset.shift(-offset).conjugate().initial_index;
+    let domain = CircleDomain::new(coset.shift(to_shift));
+    let evals = poly.evaluate(domain).bit_reverse();
+
+    evals
 }
 
 pub fn calculate_g_hat(
@@ -146,34 +163,6 @@ fn generate_rnd_r_t_values<MC: MerkleChannel>(
         generate_rnd_t_values::<MC>(channel, folded_len, repetition_param);
 
     (r_fold, r_comb, t_vals, t_shifts, t_conj)
-}
-
-pub fn interpolate<B: BackendForChannel<MC>, MC: MerkleChannel>(
-    coset: &Coset,
-    to_shift: CirclePointIndex,
-    eval: &Vec<BaseField>,
-) -> CirclePoly<B> {
-    let shift_size = coset.shift(-to_shift).conjugate().initial_index;
-    let domain = CircleDomain::new(coset.shift(shift_size));
-    let evaluation = CircleEvaluation::<B, BaseField, NaturalOrder>::new(
-        domain,
-        eval.iter().map(|x| *x).collect(),
-    );
-    let poly = evaluation.clone().bit_reverse().interpolate();
-
-    poly
-}
-
-pub fn evaluate<B: BackendForChannel<MC>, MC: MerkleChannel>(
-    poly: CirclePoly<B>,
-    coset: &Coset,
-    offset: CirclePointIndex,
-) -> CircleEvaluation<B, M31, NaturalOrder> {
-    let to_shift = coset.shift(-offset).conjugate().initial_index;
-    let domain = CircleDomain::new(coset.shift(to_shift));
-    let evals = poly.evaluate(domain).bit_reverse();
-
-    evals
 }
 
 pub fn get_betas<B: BackendForChannel<MC>, MC: MerkleChannel>(
@@ -331,7 +320,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
     let mut output_merkle_proofs = vec![];
     let mut opened_values = vec![];
 
-    let mut xs = calculate_xs(&coset, eval_offsets[0]);
+    let mut xs = coset.calculate_xs(eval_offsets[0]);
 
     if values.len() != xs.len() && xs.len() / 2 != eval_sizes[0] {
         return Err("values.len() != xs.len() && xs.len()/2 != eval_sizes[0]".to_owned());
@@ -363,7 +352,7 @@ pub fn prove_low_degree<B: BackendForChannel<MC>, MC: MerkleChannel>(
         folded_len = eval_sizes[i - 1] / folding_params[i - 1];
         let mut coset2 = coset.repeated_double(folded_len.ilog2());
 
-        let xs2s = calculate_xs2s(coset2, folding_params[i - 1]);
+        let xs2s = coset2.calculate_xs2s(folding_params[i - 1]);
 
         g_hat = calculate_g_hat(
             folded_len,
@@ -612,7 +601,7 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
         let rs_new = calculate_rs(&r_outs, &t_shifts, &t_conj, &coset2, p_offset);
 
         let temp_coset2 = coset.repeated_double(folded_len.ilog2());
-        let xs2s = calculate_xs2s(temp_coset2, folding_params[i - 1]);
+        let xs2s = temp_coset2.calculate_xs2s(folding_params[i - 1]);
 
         let output_branch = output_merkle_proofs.remove(0);
         let values = opened_values.remove(0);
@@ -703,7 +692,7 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
     );
 
     let coset3 = coset.repeated_double(folded_len.ilog2());
-    let xs2s = calculate_xs2s(coset3, folding_params[folding_params.len() - 1]);
+    let xs2s = coset3.calculate_xs2s(folding_params[folding_params.len() - 1]);
 
     // let root = output_roots.remove(0);
     let output_branch = output_merkle_proofs.remove(0);
@@ -779,7 +768,7 @@ pub fn verify_low_degree_proof<B: BackendForChannel<MC>, MC: MerkleChannel>(
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{calculate_g_hat, calculate_rs_and_g_rs, calculate_xs, calculate_xs2s, fold_val};
+    use super::{calculate_g_hat, calculate_rs_and_g_rs, calculate_xs, fold_val};
     use crate::core::backend::CpuBackend;
     use crate::core::channel::MerkleChannel;
     use crate::core::circle::{CirclePoint, CirclePointIndex};
@@ -800,7 +789,7 @@ mod tests {
         let log_size = 3;
         let coset = CanonicCoset::new(log_size).coset;
         let folding_param = 1 << 2;
-        let xs2s = calculate_xs2s(coset, folding_param);
+        let xs2s = coset.calculate_xs2s(folding_param);
 
         let xs2s_points_0: Vec<CirclePoint<M31>> = xs2s[0].iter().map(|x| x.to_point()).collect();
         let xs2s_points_1: Vec<CirclePoint<M31>> = xs2s[1].iter().map(|x| x.to_point()).collect();
@@ -975,7 +964,7 @@ mod tests {
         let vals: Vec<M31> = (0..2 * eval_size).map(|x| BaseField::from(x)).collect();
 
         let xs = calculate_xs(&coset, CirclePointIndex(0));
-        let xs2s = calculate_xs2s(coset2, folding_param);
+        let xs2s = coset2.calculate_xs2s(folding_param);
 
         let g_hat = calculate_g_hat(
             folded_len,
@@ -1540,7 +1529,7 @@ mod tests {
         let r_fold = CirclePointIndex(1).to_point(); // random point
         let mut coset2 = coset.repeated_double(folded_len.ilog2());
 
-        let xs2s = calculate_xs2s(coset2, folding_param);
+        let xs2s = coset2.calculate_xs2s(folding_param);
         let xs2s_points_0: Vec<CirclePoint<M31>> = xs2s[0].iter().map(|x| x.to_point()).collect();
         let xs2s_points_1: Vec<CirclePoint<M31>> = xs2s[1].iter().map(|x| x.to_point()).collect();
 

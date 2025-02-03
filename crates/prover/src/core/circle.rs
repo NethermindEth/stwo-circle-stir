@@ -481,6 +481,25 @@ impl Coset {
         os.pop();
         os
     }
+
+    pub fn calculate_xs2s(&self, folding_param: usize) -> [Vec<CirclePointIndex>; 2] {
+        let mut xs2s: [Vec<CirclePointIndex>; 2] = [vec![], vec![]];
+        xs2s[0] = self.get_mul_cycle(CirclePointIndex(0));
+        xs2s[1].push(xs2s[0][0]);
+        for j in 1..folding_param {
+            xs2s[1].push(xs2s[0][xs2s[0].len() - j]);
+        }
+
+        xs2s
+    }
+
+    pub fn calculate_xs(&self, eval_offset: CirclePointIndex) -> Vec<CirclePointIndex> {
+        let mut xs = self.get_mul_cycle(eval_offset);
+        let mut xs_conj: Vec<CirclePointIndex> = xs.iter().map(|x| x.conj()).collect();
+        xs.append(&mut xs_conj);
+
+        xs
+    }
 }
 
 impl IntoIterator for Coset {
